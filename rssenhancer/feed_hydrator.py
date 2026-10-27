@@ -4,8 +4,9 @@ For every configured RSS/Atom feed it
   1. fetches the feed (conditional GET: unchanged feeds cost one 304 response),
   2. checks, without touching the entries' contents, whether any entry is new,
   3. for new entries only: opens the article page and extracts the full text with a CSS selector,
-  4. puts that text into the feed (Atom: replaces <content>; RSS: keeps <description> and adds
-     <content:encoded>) and hands the result to the publisher as `<domain>-<path>.feed.xml`.
+  4. puts that text into the feed (Atom: replaces <content>; RSS: adds <content:encoded>), removes the entry's
+     own summary/description or moves it to the start or the end of the content, as configured ("summary"),
+     and hands the result to the publisher as `<domain>-<path>.feed.xml`.
 
 Hydrated article text is cached in a state file, so old entries are never fetched or parsed again.
 The hydrator knows nothing about e-mail; it only needs config.json (see config.example.json).
@@ -22,14 +23,14 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import common, publisher
+from . import atomfeed, common, publisher
 from .common import ROOT, atomic_write, env, http_get, log
 from .htmlutil import clean_fragment, decode_html, extract_article, extract_html, parse_selector
 
 ATOM = "http://www.w3.org/2005/Atom"
 CONTENT = "http://purl.org/rss/1.0/modules/content/"
-SUMMARY_MODES = ("keep", "start", "end")
-VIEW_FORMAT = 3  # bump when the look of the published entries changes, so existing feeds are rewritten
+SUMMARY_MODES = ("remove", "start", "end")
+VIEW_FORMAT = 4  # bump when the look of the published entries changes, so existing feeds are rewritten
 MAX_TRIES = 3  # an article that cannot be hydrated is retried this many times, then left as it is
 AUTO = "auto"
 DEFAULTS = {"poll_minutes": 60, "request_delay": 1.0, "max_items_per_run": 30, "timeout": 30, "allow_private_hosts": False}
@@ -72,10 +73,13 @@ def load_config():
                 raise SystemExit("%s (%s): %s" % (where, f["url"], e))
         if not isinstance(f.get("drop_unhydrated", True), bool):
             raise SystemExit("%s (%s): \"drop_unhydrated\" must be true or false" % (where, f["url"]))
+        if f.get("format", "original") not in ("original", "atom"):
+            raise SystemExit("%s (%s): \"format\" must be \"original\" or \"atom\"" % (where, f["url"]))
         if "prepend_description" in f:
-            raise SystemExit("%s (%s): \"prepend_description\" was replaced by \"summary\": \"keep\", \"start\" or \"end\"" % (where, f["url"]))
-        if f.get("summary", "keep") not in SUMMARY_MODES:
-            raise SystemExit("%s (%s): \"summary\" must be one of %s" % (where, f["url"], ", ".join(SUMMARY_MODES)))
+            raise SystemExit("%s (%s): \"prepend_description\" was replaced by \"summary\": \"remove\", \"start\" or \"end\"" % (where, f["url"]))
+        if f.get("summary", "remove") not in SUMMARY_MODES:
+            hint = " (\"keep\" no longer exists: the summary is either removed or moved into the content)" if f.get("summary") == "keep" else ""
+            raise SystemExit("%s (%s): \"summary\" must be one of %s%s" % (where, f["url"], ", ".join(SUMMARY_MODES), hint))
         if not isinstance(f.get("summary_label", ""), str):
             raise SystemExit("%s (%s): \"summary_label\" must be a string" % (where, f["url"]))
         if not isinstance(f.get("skip_hosts", []), list) or not isinstance(f.get("min_words", 0), int):
@@ -175,12 +179,13 @@ def parse_feed(body):
     """Full parse. Namespace prefixes used in the document are registered so they survive serialisation."""
     _check_safe(body)
     it = ET.iterparse(io.BytesIO(body), events=("start-ns",))
-    for _, (prefix, uri) in it:
-        if prefix and not re.fullmatch(r"ns\d+", prefix):
-            try:
-                ET.register_namespace(prefix, uri)
-            except ValueError:
-                pass
+    with atomfeed.NS_LOCK:  # ElementTree's namespace table is shared with the other source's thread
+        for _, (prefix, uri) in it:
+            if prefix and not re.fullmatch(r"ns\d+", prefix):
+                try:
+                    ET.register_namespace(prefix, uri)
+                except ValueError:
+                    pass
     root = it.root
     return root, detect_format(root.tag)
 
@@ -194,7 +199,7 @@ def entries_of(root, fmt):
 
 # ------------------------------------------------------------------ editing feeds
 def original_html(el, fmt):
-    """The entry's own summary/description as clean HTML (used to keep it above the full text)."""
+    """The entry's own summary/description as clean HTML (used when it is moved into the content)."""
     if fmt == "atom":
         s = el.find("{%s}summary" % ATOM)
         text = (s.text or "") if s is not None else ""
@@ -209,7 +214,7 @@ def original_html(el, fmt):
 
 
 def remove_summary(el, fmt):
-    """Delete the entry's own summary/description (it has been moved into the content)."""
+    """Delete the entry's own summary/description (it was moved into the content, or is not wanted)."""
     if fmt == "atom":
         summary = el.find("{%s}summary" % ATOM)
         if summary is not None:
@@ -232,7 +237,7 @@ def apply_content(el, fmt, html_text, head="", tail=""):
         content.attrib.pop("src", None)
         content.set("type", "html")
         content.text = html_text
-    else:  # RSS: keep <description> exactly as it is, add the full text next to it
+    else:  # RSS: the full text goes into <content:encoded>
         enc = el.find("{%s}encoded" % CONTENT)
         if enc is None:
             enc = ET.SubElement(el, "{%s}encoded" % CONTENT)
@@ -247,16 +252,6 @@ def point_self_link_here(root, fmt, name):
     for link in holder.findall("{%s}link" % ATOM):
         if link.get("rel") == "self":
             link.set("href", publisher.public_url(name))
-
-
-def serialize(root, fmt):
-    """XML bytes with the original namespace prefixes. ElementTree's default_namespace option rejects ordinary
-    attributes, so the Atom namespace is registered as the default one for the duration of the call instead
-    (unless some element has no namespace at all, in which case Atom keeps an `atom:` prefix to stay unambiguous)."""
-    ET.register_namespace("content", CONTENT)
-    plain = any(isinstance(el.tag, str) and not el.tag.startswith("{") for el in root.iter())
-    ET.register_namespace("" if fmt == "atom" and not plain else "atom", ATOM)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 # ------------------------------------------------------------------ state
@@ -286,7 +281,7 @@ def _signatures(feed):
     changing only how they are shown just forces the feed to be rewritten."""
     pick = lambda keys: json.dumps({k: feed.get(k) for k in keys}, sort_keys=True)
     return (pick(("selector", "link_from", "min_words", "skip_hosts")),
-            pick(("summary", "summary_label", "drop_unhydrated")) + str(VIEW_FORMAT))
+            pick(("summary", "summary_label", "drop_unhydrated", "format")) + str(VIEW_FORMAT))
 
 
 def _pending(rec):
@@ -380,15 +375,16 @@ def refresh(feed, cfg):
             rec = st["items"][key] = {"html": html_text, "tries": tries}
             done += 1 if fetched else 0
         if rec and rec.get("html"):
-            # summary: keep   - the text only; the entry's own summary/description stays where it is
-            #          start  - the summary moves to the beginning of the content (and leaves its own element)
-            #          end    - the same, to the end of the content
-            mode = feed.get("summary", "keep")
-            summary = original_html(el, fmt) if mode != "keep" else ""
+            # What happens to the entry's own summary/description (it usually repeats the text, and many readers
+            # show either the summary or the content, never both):
+            #   remove - gone, the content is the full text only
+            #   start  - moved into the content, as a box before the text
+            #   end    - moved into the content, as a box after the text
+            mode = feed.get("summary", "remove")
+            summary = original_html(el, fmt) if mode in ("start", "end") else ""
             block = publisher.summary_block(summary, feed.get("summary_label", "Summary"), "after" if mode == "start" else "before")
             apply_content(el, fmt, rec["html"], block if mode == "start" else "", block if mode == "end" else "")
-            if block:
-                remove_summary(el, fmt)
+            remove_summary(el, fmt)
         elif drop_mode:
             # Not hydrated: skipped for good (text post, PDF, video site), given up after MAX_TRIES, or still
             # waiting its turn. Either way it stays out of the feed; the hydrated ones are all a reader sees.
@@ -397,8 +393,14 @@ def refresh(feed, cfg):
     for el in drop:
         holder.remove(el)
     st["items"] = {k: v for k, v in st["items"].items() if k in set(keys)}  # forget entries that left the feed
-    point_self_link_here(root, fmt, name)
-    publisher.publish(name, serialize(root, fmt))
+    if feed.get("format") == "atom" and fmt == "rss":
+        # reformat as Atom (an Atom feed stays as it is); the converted feed gets its own rel="self" and id
+        root = atomfeed.rss_to_atom(root, publisher.public_url(name))
+        data = atomfeed.serialize(root, True, indent=True)
+    else:
+        point_self_link_here(root, fmt, name)
+        data = atomfeed.serialize(root, fmt == "atom")
+    publisher.publish(name, data)
     save_state(name, st)  # after publishing, so a crash in between just redoes the work
     log("%s: %d article(s) fetched, %d of %d entries published, %d left out" % (name, done, len(keys) - len(drop), len(keys), len(drop)))
     return done

@@ -56,8 +56,9 @@ Configured in `config.json` (see `config.example.json`):
 | `link_from` | Where the entry keeps the article URL: `"link"` (default: RSS `<link>`, Atom `<link rel="alternate">`) or `"id"` (RSS `<guid>` / Atom `<id>`) |
 | `name` | Optional output file name (`something.feed.xml`); needed only if two feeds would get the same automatic name |
 | `drop_unhydrated` | `true` (default): an entry that is not hydrated stays **out of the republished feed**: text posts, PDFs, skipped hosts, pages that yield too little text, entries given up on after three failed tries, and entries still waiting for their turn. The feed then contains only entries with their full text. `false` publishes them as the origin feed has them |
-| `summary` | What happens to the entry's own summary (Atom `<summary>`, RSS `<description>`). Many readers show *either* the summary *or* the content, so there are three cases, see below: `"keep"` (default), `"start"`, `"end"` |
+| `summary` | What happens to the entry's own summary (Atom `<summary>`, RSS `<description>`). Many readers show *either* the summary *or* the content, so there are three cases, see below: `"remove"` (default), `"start"`, `"end"` |
 | `summary_label` | Label of the box a moved summary is shown in; default `"Summary"`, e.g. `"Кратко"`. `""` (empty) gives plain text without the box, which suits a description that is not a summary (hnrss: Article URL, Comments URL, points) |
+| `format` | `"original"` (default) publishes the feed in the format it came in. `"atom"` reformats an RSS 2.0 feed as Atom 1.0 (an Atom feed is left as it is), see below |
 | `min_words` | A page that yields fewer words counts as a failed extraction. Default `0`, or `60` with `"auto"` |
 | `skip_hosts` | Hosts whose links are never fetched. Default `[]`, or a list of video/social sites with `"auto"` |
 
@@ -76,20 +77,40 @@ dropped, the query string ignored: `hnrss.org-frontpage.feed.xml`.
 
 | `summary` | Content of the entry | The entry's own `<summary>` / `<description>` |
 |---|---|---|
-| `"keep"` (default) | the full text fetched from the site | stays as it is |
-| `"start"` | the summary first, in a labelled box, then a rule, then the full text | **removed**: it has been moved into the content |
-| `"end"` | the full text, then a rule, then the summary in the same box | **removed** |
+| `"remove"` (default) | the full text fetched from the site and nothing else | **removed**: it usually repeats the opening of the text, so it is not needed |
+| `"start"` | the summary first, in a labelled box, then a rule, then the full text | **removed**: moved into the content |
+| `"end"` | the full text, then a rule, then the summary in the same box | **removed**: moved into the content |
 
 The box is the one the AI summaries of the subscription processor use:
 `<blockquote><strong>Summary:</strong> ...</blockquote>`. An RSS item without a `<title>` keeps its `<description>`,
-because an item needs one of the two. Only entries that were hydrated are touched, and an entry that has no summary
-is left alone.
+because an item needs one of the two. Only entries that were hydrated are touched; entries that are published as
+the origin has them (`drop_unhydrated: false`) keep their summary.
+
+**Reformatting as Atom** (`"format": "atom"`)
+
+Some readers handle Atom better, so each feed can be republished as Atom 1.0, based on `rss2atom.py`:
+
+| RSS 2.0 | Atom 1.0 |
+|---|---|
+| channel title, link, description, language, copyright, image | `title`, `link rel="alternate"`, `subtitle`, `xml:lang`, `rights`, `logo` |
+| lastBuildDate / pubDate | `updated` (else the newest entry's date) |
+| item `content:encoded` | `content type="html"` |
+| item `description` | `summary` (or nothing, if the summary was removed or moved into the content) |
+| item `guid` / `link` | `id` (an IRI as it is, anything else a stable `urn:uuid`), `link rel="alternate"` |
+| `comments`, `enclosure` | `link rel="replies"`, `link rel="enclosure"` |
+| `author`, `dc:creator`, `category`, `pubDate` | `author`, `category`, `published` and `updated` |
+
+The converted feed gets its own `rel="self"` link (its address here) and the feed id is that address. Elements from other
+namespaces (`rian:`, `itunes:`, ...) are not carried over. The mail feed has the same switch:
+`SUBSCRIPTION_FEED_FORMAT=atom` (its text becomes the Atom `<content>`).
 
 **What changes in the feed**
 
 - Atom: `<content>` is replaced with the full text (`type="html"`).
 - RSS: the full text is added as `<content:encoded>`.
-- Everything else stays, except the summary when `summary` is `"start"` or `"end"` (see above).
+- Everything else stays, except the entry's own summary/description, which leaves its element in all three cases (see above).
+  hnrss is the exception worth knowing: its description holds the Article URL, Comments URL and points, so use
+  `"start"` or `"end"` there, not `"remove"`.
 - The feed's own `rel="self"` link is pointed at the republished address, so a reader cannot wander back to the original.
 - Namespaces and unknown extension elements (`rian:related`, `itunes:`, ...) are preserved. XML comments and
   stylesheet instructions are dropped.
@@ -213,6 +234,7 @@ Everything is an environment variable or a line in `.env` (real environment wins
 | `IMAP_HOST`, `IMAP_USER`, `IMAP_FOLDER` | `imap.gmail.com`, address without `+tag`, `INBOX` | Mailbox |
 | `SUBSCRIPTION_POLL_MINUTES`, `SUBSCRIPTION_LOOKBACK_DAYS` | `15`, `7` | Mail schedule |
 | `SUBSCRIPTION_FEED_TITLE` | `Mail: ` + masked address | Title of the mail feed |
+| `SUBSCRIPTION_FEED_FORMAT` | `rss` | `atom` publishes the mail feed as Atom |
 | `SUMMARY_LIMIT_WORDS`, `SUMMARY_LONG_WORDS`, `SUMMARY_FACTOR`, `SUMMARY_RATIO` | `500`, `1000`, `0.5`, off | Summary sizing |
 
 Data layout in `RSSENHANCER_DIR`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`,

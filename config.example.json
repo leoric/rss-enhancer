@@ -1,5 +1,5 @@
 {
-  "_comment": "Feed hydrator. Copy to config.json. Keys starting with _ are ignored. summary: keep | start | end, see README.",
+  "_comment": "Feed hydrator. Copy to config.json. Keys starting with _ are ignored. summary: remove | start | end; format: original | atom, see README.",
   "poll_minutes": 60,
   "request_delay": 1.0,
   "max_items_per_run": 30,

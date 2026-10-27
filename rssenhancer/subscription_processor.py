@@ -13,6 +13,7 @@ Settings (environment or .env):
   SUBSCRIPTION_ADDRESS (required, e.g. foo+bar@baz.com)  IMAP_PASSWORD (required, an app password)
   IMAP_HOST (imap.gmail.com)  IMAP_USER (address without +tag)  IMAP_FOLDER (INBOX)
   SUBSCRIPTION_POLL_MINUTES (15)  SUBSCRIPTION_LOOKBACK_DAYS (7)  SUBSCRIPTION_FEED_TITLE
+  SUBSCRIPTION_FEED_FORMAT (rss | atom)
 Summaries (a retelling, not a gist), sized by two limits:
   SUMMARY_LIMIT_WORDS (500)   topics shorter than this get no summary; topics up to the second
                               limit get a summary of this size
@@ -27,12 +28,13 @@ import html
 import imaplib
 import json
 import re
+import xml.etree.ElementTree as ET
 from email import policy
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import quote
 
-from . import common, publisher
+from . import atomfeed, common, publisher
 from .ai import extract_json, get_provider, rapid_poll_done
 from .common import atomic_write, env, log
 
@@ -43,6 +45,7 @@ IMAP_PASSWORD = env("IMAP_PASSWORD")
 FOLDER = env("IMAP_FOLDER", "INBOX")
 POLL_MINUTES = float(env("SUBSCRIPTION_POLL_MINUTES", "15"))
 LOOKBACK_DAYS = int(env("SUBSCRIPTION_LOOKBACK_DAYS", "7"))
+FEED_FORMAT = (env("SUBSCRIPTION_FEED_FORMAT", "rss") or "rss").lower()  # rss | atom
 MAX_ITEMS = 500
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ADDR_HEADERS = ["To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To"]
@@ -487,8 +490,14 @@ def save_state(state):
 
 def publish_items(items):
     title = env("SUBSCRIPTION_FEED_TITLE") or "Mail: " + mask_address(ADDRESS)
-    publisher.publish(publisher.MAIL_FEED, publisher.rss_document(
-        title, "AI-split topics from mail to " + mask_address(ADDRESS), items, publisher.MAIL_FEED))
+    document = publisher.rss_document(
+        title, "AI-split topics from mail to " + mask_address(ADDRESS), items, publisher.MAIL_FEED)
+    if FEED_FORMAT == "atom":
+        # the item's description holds the whole text here, so it becomes the Atom <content>
+        feed = atomfeed.rss_to_atom(ET.fromstring(document), publisher.public_url(publisher.MAIL_FEED), description_is_content=True)
+        publisher.publish(publisher.MAIL_FEED, atomfeed.serialize(feed, True, indent=True))
+    else:
+        publisher.publish(publisher.MAIL_FEED, document)
 
 
 def configured():
@@ -501,6 +510,8 @@ def make_worker():
         raise SystemExit("Set SUBSCRIPTION_ADDRESS to a plus address, e.g. foo+bar@baz.com")
     if not IMAP_PASSWORD:
         raise SystemExit("Set IMAP_PASSWORD (use an app password)")
+    if FEED_FORMAT not in ("rss", "atom"):
+        raise SystemExit("SUBSCRIPTION_FEED_FORMAT must be rss or atom")
     name, call_ai = get_provider()
     state = load_state()
     publish_items(state["items"])
