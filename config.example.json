@@ -1,0 +1,16 @@
+{
+  "_comment": "Feed hydrator. Copy to config.json. Keys starting with _ are ignored. summary: keep | start | end, see README.",
+  "poll_minutes": 60,
+  "request_delay": 1.0,
+  "max_items_per_run": 30,
+  "timeout": 30,
+  "feeds": [
+    {
+      "_comment": "feeds that link to arbitrary sites: reader-mode extraction instead of a selector",
+      "url": "https://hnrss.org/frontpage",
+      "selector": "auto",
+      "summary": "start",
+      "summary_label": ""
+    }
+  ]
+}
