@@ -25,7 +25,8 @@ from urllib.parse import urlparse
 
 from . import atomfeed, common, publisher
 from .common import ROOT, atomic_write, env, http_get, log
-from .htmlutil import clean_fragment, decode_html, extract_article, extract_html, parse_selector
+from .cssfilter import FilterSet, SelectorError, parse_selector
+from .htmlutil import clean_fragment, decode_html, extract_article, extract_html
 
 ATOM = "http://www.w3.org/2005/Atom"
 CONTENT = "http://purl.org/rss/1.0/modules/content/"
@@ -88,9 +89,34 @@ def load_config():
             raise SystemExit("%s (%s): \"link_from\" must be \"link\" or \"id\"" % (where, f["url"]))
         if f.get("name") and not publisher.valid_name(f["name"]):
             raise SystemExit("%s (%s): \"name\" must look like something.feed.xml" % (where, f["url"]))
+        f["_rules"], f["_rules_text"] = _build_rules(raw, f, p.parent, where)
         feeds.append(f)
     cfg["feeds"] = feeds
     return cfg
+
+
+def _build_rules(raw, feed, base, where):
+    """The feed's cosmetic filters: the config's top-level "remove" / "filters_file" first, then the feed's own.
+    -> (FilterSet or None, the filters as text, for the cache signature)"""
+    rules = FilterSet()
+    for scope, label in ((raw, "top level"), (feed, "this feed")):
+        lines = scope.get("remove") or []
+        files = scope.get("filters_file") or []
+        lines, files = ([lines] if isinstance(lines, str) else lines), ([files] if isinstance(files, str) else files)
+        if not all(isinstance(x, str) for x in list(lines) + list(files)) or not isinstance(lines, list) or not isinstance(files, list):
+            raise SystemExit("%s: \"remove\" and \"filters_file\" (%s) must be a string or a list of strings" % (where, label))
+        try:
+            for i, line in enumerate(lines, 1):
+                rules.add_line(line, "%s: \"remove\" #%d (%s)" % (where, i, label))
+            for name in files:
+                path = Path(name).expanduser()
+                path = path if path.is_absolute() else base / path
+                if not path.is_file():
+                    raise SystemExit("%s: filters file %s not found" % (where, path))
+                rules.add_text(path.read_text(encoding="utf-8"), str(path), bare_ok=False)
+        except SelectorError as e:
+            raise SystemExit(str(e))
+    return (rules if rules else None), rules.signature()
 
 
 def configured():
@@ -280,7 +306,7 @@ def _signatures(feed):
     """(fetch settings, presentation settings). Changing how articles are fetched invalidates the cache;
     changing only how they are shown just forces the feed to be rewritten."""
     pick = lambda keys: json.dumps({k: feed.get(k) for k in keys}, sort_keys=True)
-    return (pick(("selector", "link_from", "min_words", "skip_hosts")),
+    return (pick(("selector", "link_from", "min_words", "skip_hosts", "_rules_text")),
             pick(("summary", "summary_label", "drop_unhydrated", "format")) + str(VIEW_FORMAT))
 
 
@@ -301,7 +327,8 @@ def fetch_article(url, feed, cfg):
     if ctype and r.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
         raise Skip("not a web page (%s)" % r.headers.get_content_type())
     page = decode_html(r.body, ctype or "")
-    out = extract_article(page, r.url) if auto else extract_html(page, feed["selector"], r.url)
+    rules, host = feed.get("_rules"), (urlparse(r.url).hostname or "").lower()
+    out = extract_article(page, r.url, rules, host) if auto else extract_html(page, feed["selector"], r.url, rules, host)
     if not out.strip():
         raise ValueError("no article text found" if auto else "selector %r matched nothing" % feed["selector"])
     words = len(re.sub(r"<[^>]*>", " ", out).split())

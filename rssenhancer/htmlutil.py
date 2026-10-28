@@ -1,7 +1,7 @@
 """HTML helpers for the feed hydrator.
 
 decode_html()      bytes of a web page -> text (HTTP header / <meta> charset, then UTF-8)
-extract_html()     pick elements with a simple CSS selector and return their *content* as clean, well-formed
+extract_html()     pick elements with a CSS selector (see cssfilter.py) and return their *content* as clean, well-formed
                    HTML that an RSS reader understands: only a safe set of tags and attributes, absolute URLs,
                    lazy-loaded images resolved, scripts/styles/forms dropped, unclosed tags repaired.
 extract_article()  the same for pages nobody wrote a selector for: finds the main text on its own
@@ -16,6 +16,8 @@ import html as _html
 import re
 from html.parser import HTMLParser
 from urllib.parse import urljoin
+
+from .cssfilter import compile_selector, find_all
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 
@@ -118,50 +120,6 @@ def decode_html(body, content_type=""):
     return body.decode("utf-8", "replace")
 
 
-# ------------------------------------------------------------------ selectors
-_SEL_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9]*)?((?:\.[\w-]+)*)(?:#([\w-]+))?$")
-
-
-def parse_selector(selector):
-    """'div.itemFullText' / '.a.b' / 'div#main' / comma-separated lists -> [(tag, classes, id)]."""
-    out = []
-    for part in selector.split(","):
-        m = _SEL_RE.match(part.strip())
-        if not part.strip() or not m or not (m.group(1) or m.group(2) or m.group(3)):
-            raise ValueError("unsupported selector %r (use tag, .class, tag.class or tag#id, comma-separated)" % part.strip())
-        classes = [c for c in m.group(2).split(".") if c]
-        out.append((m.group(1).lower() if m.group(1) else None, classes, m.group(3)))
-    return out
-
-
-def _match(node, sels):
-    classes = node.attrs.get("class", "").split()
-    for tag, need, id_ in sels:
-        if tag and node.tag != tag:
-            continue
-        if id_ and node.attrs.get("id") != id_:
-            continue
-        if all(c in classes for c in need):
-            return True
-    return False
-
-
-def _select(root, sels):
-    """Outermost matching elements in document order (iterative, so deeply nested pages are fine)."""
-    out, stack = [], [iter(root.children)]
-    while stack:
-        for c in stack[-1]:
-            if isinstance(c, Node):
-                if _match(c, sels):
-                    out.append(c)
-                else:
-                    stack.append(iter(c.children))
-                    break
-        else:
-            stack.pop()
-    return out
-
-
 # ------------------------------------------------------------------ cleaning
 def _abs(url, base, schemes):
     url = (url or "").strip()
@@ -232,15 +190,19 @@ def _render(n, base, pre, parent):
     return "<%s%s>%s</%s>" % (tag, attrs, inner, tag)
 
 
-def extract_html(page, selector, base_url=""):
+def extract_html(page, selector, base_url="", filters=None, host=""):
     """Content of every outermost element matching `selector`, cleaned and joined with newlines.
-    Returns "" when nothing matches."""
-    sels = parse_selector(selector)
+    `filters` (a cssfilter.FilterSet) cuts blocks out of the page first. Returns "" when nothing matches."""
+    sel = compile_selector(selector)
     builder = _Builder()
     builder.feed(page)
     builder.close()
+    if filters:
+        filters.apply(builder.root, host)
+    matched = find_all(builder.root, sel)
+    ids = {id(n) for n in matched}
     parts = []
-    for node in _select(builder.root, sels):
+    for node in (n for n in matched if not any(id(a) in ids for a in _ancestors(n))):
         out = "".join(_render(c, base_url, node.tag == "pre", node.tag) for c in node.children).strip()
         if _has_content(out):
             parts.append(out)
@@ -432,12 +394,15 @@ def _clean_selected(wrapper, info):
         n.children = keep
 
 
-def extract_article(page, base_url=""):
-    """Main text of an arbitrary article page as clean HTML ("" if no article-like text is found)."""
+def extract_article(page, base_url="", filters=None, host=""):
+    """Main text of an arbitrary article page as clean HTML ("" if no article-like text is found).
+    `filters` (a cssfilter.FilterSet) cuts blocks out of the page first."""
     builder = _Builder()
     builder.feed(page)
     builder.close()
     root = builder.root
+    if filters:
+        filters.apply(root, host)
     _prune(root)
     info = _stats(root)
     chosen = _pick(root, info, _all_nodes(root))

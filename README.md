@@ -52,13 +52,15 @@ Configured in `config.json` (see `config.example.json`):
 | Per feed | Meaning |
 |---|---|
 | `url` | The feed to enhance (Atom or RSS 2.0) |
-| `selector` | Where the article text is on the article page: `tag`, `.class`, `tag.class`, `tag#id`, comma-separated. **Every** matching element is used, in page order, and concatenated. Or `"auto"` for feeds that link to arbitrary sites (see below) |
+| `selector` | Where the article text is on the article page: a CSS selector (`div.article`, `main > .post`, `article:has(h1)`, comma lists, see the list under "Cutting blocks out" for what is understood). **Every** outermost matching element is used, in page order, and concatenated. Or `"auto"` for feeds that link to arbitrary sites (see below) |
 | `link_from` | Where the entry keeps the article URL: `"link"` (default: RSS `<link>`, Atom `<link rel="alternate">`) or `"id"` (RSS `<guid>` / Atom `<id>`) |
 | `name` | Optional output file name (`something.feed.xml`); needed only if two feeds would get the same automatic name |
 | `drop_unhydrated` | `true` (default): an entry that is not hydrated stays **out of the republished feed**: text posts, PDFs, skipped hosts, pages that yield too little text, entries given up on after three failed tries, and entries still waiting for their turn. The feed then contains only entries with their full text. `false` publishes them as the origin feed has them |
 | `summary` | What happens to the entry's own summary (Atom `<summary>`, RSS `<description>`). Many readers show *either* the summary *or* the content, so there are three cases, see below: `"remove"` (default), `"start"`, `"end"` |
 | `summary_label` | Label of the box a moved summary is shown in; default `"Summary"`, e.g. `"Кратко"`. `""` (empty) gives plain text without the box, which suits a description that is not a summary (hnrss: Article URL, Comments URL, points) |
 | `format` | `"original"` (default) publishes the feed in the format it came in. `"atom"` reformats an RSS 2.0 feed as Atom 1.0 (an Atom feed is left as it is), see below |
+| `remove` | A list of cosmetic filters in uBlock Origin syntax that cut blocks out of the page *before* the text is extracted, e.g. `".article__block:has(div[data-type*=\"banner\"])"`. See "Cutting blocks out" below |
+| `filters_file` | A text file (or a list of them) with such filters, one per line, as in a uBlock list. Relative paths are relative to the config file |
 | `min_words` | A page that yields fewer words counts as a failed extraction. Default `0`, or `60` with `"auto"` |
 | `skip_hosts` | Hosts whose links are never fetched. Default `[]`, or a list of video/social sites with `"auto"` |
 
@@ -115,6 +117,68 @@ namespaces (`rian:`, `itunes:`, ...) are not carried over. The mail feed has the
 - Namespaces and unknown extension elements (`rian:related`, `itunes:`, ...) are preserved. XML comments and
   stylesheet instructions are dropped.
 
+### Cutting blocks out of the text (`remove`, uBlock Origin syntax)
+
+Pages carry things you do not want in the feed: banners, "read also" links, newsletter pitches. `remove` takes filters in
+the syntax of uBlock Origin's cosmetic filters. They are applied to the downloaded page *before* the text is extracted;
+every element a filter matches is removed together with everything inside it.
+
+```json
+{
+  "remove": ["##.cookie-banner"],
+  "feeds": [{
+    "url": "https://example.com/feed.xml",
+    "selector": "div.article__block",
+    "remove": [
+      ".article__block:has(div[data-type*=\"banner\"])",
+      ".article__block>strong>a",
+      "news.example.com##.newsletter:has-text(/subscribe/i)",
+      "~github.com##.sponsor"
+    ],
+    "filters_file": "filters.txt"
+  }]
+}
+```
+
+The first two lines are the usual case: drop every `.article__block` that contains a banner, and drop the links directly
+inside `strong` inside a block. (A class needs its dot, as in uBlock: `article__block` without it would be an element
+named `article__block`.) A `remove` at the top of the config applies to all feeds; the feed's own comes after it.
+
+**Filter lines**
+
+| Line | Meaning |
+|---|---|
+| `selector` or `##selector` | applies on every site |
+| `a.com,b.com##selector` | only on these sites and their subdomains (the site is the article's, not the feed's, so one list can serve a feed that links everywhere, like hnrss) |
+| `~a.com##selector`, `a.com,~b.a.com##selector` | everywhere except / on a.com but not on b.a.com |
+| `a.com#@#selector` | exception: cancels a filter with exactly the same selector on a.com |
+| `#?#` instead of `##` | accepted, same meaning |
+| `! text`, blank lines, `[Adblock Plus 2.0]` | ignored |
+
+**Selectors:** `tag`, `*`, `.class`, `#id`, `[attr]`, `[attr=v]`, `[attr~=v]`, `[attr|=v]`, `[attr^=v]`, `[attr$=v]`,
+`[attr*=v]` (with an `i` flag), the combinators ` ` `>` `+` `~`, lists with `,`, and the pseudo-classes `:not()`, `:is()`,
+`:where()`, `:has()` (also relative: `:has(> img)`, `:has(+ p)`), `:first-child`, `:last-child`, `:only-child`,
+`:nth-child()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`,
+`:nth-last-of-type()`, `:empty`.
+
+**uBlock Origin's procedural operators**
+
+| Operator | Meaning |
+|---|---|
+| `:has-text(text)` / `:has-text(/regex/flags)` / `:contains()` | the element's text matches; plain text is case-sensitive |
+| `:matches-attr("name"="value")` | some attribute matches; plain text must match fully, `/regex/` anywhere |
+| `:min-text-length(n)` | at least n characters of text |
+| `:upward(n)` / `:upward(selector)` / `:nth-ancestor(n)` | remove the n-th / the nearest matching ancestor instead; the last step of a selector only |
+| `:remove()` | accepted and ignored, matched elements are always removed |
+
+Not supported, with an error that names the line: `:xpath()`, `:matches-css*()`, `:style()`, `:watch-attr()`, `:others()`,
+scriptlets (`##+js(...)`), HTML filters (`##^`), network filters (`||example.com^`), wildcard and regex domains.
+A parenthesis inside an argument must be balanced, escaped (`\)`), or sit in a quoted string.
+
+All filters are matched against the page as it was before anything was removed, so their order does not matter. They
+also apply in `"auto"` mode, before the text is looked for. Changing the filters discards the feed's cache and
+hydrates it again, like changing the selector does.
+
 ### Feeds that link to arbitrary sites (Hacker News and similar)
 
 For a feed like `hnrss.org` every entry links to a different site, so there is no selector to write. Use
@@ -157,7 +221,7 @@ For a feed like `hnrss.org` every entry links to a different site, so there is n
    posts) are not retried at all. Entries that are not hydrated, whether given up or still waiting (for example beyond
    `max_items_per_run`), are left out of the republished feed unless `drop_unhydrated` is `false`; an entry that failed
    for good is therefore gone for good, and so is every entry of a feed whose selector stopped matching: watch the log.
-5. Changing a feed's `selector`, `link_from`, `min_words` or `skip_hosts` discards its cache and hydrates everything
+5. Changing a feed's `selector`, `link_from`, `min_words`, `skip_hosts` or its filters (`remove`, `filters_file`) discards its cache and hydrates everything
    again; changing `summary`, `summary_label` or `drop_unhydrated` only rewrites the feed. The first start after an upgrade
    rewrites every feed once.
 
@@ -278,6 +342,7 @@ the new ones win when both are set. On first start the old data folder `~/Librar
 | `only N words extracted, probably not an article` / `no article text found` | `"auto"` found nothing article-like (landing page, paywall, JavaScript app). The entry is left out of the feed (it keeps its original content with `drop_unhydrated: false`) |
 | `refusing to fetch ...: ... is not a public address` | The link points into a private network; this is the safety guard |
 | `HTTP 403` for articles | The site blocks scripts; there is no workaround here |
+| `config.json: feed #N: "remove" #M ...: ...` | A filter could not be read or uses something that is not supported (see the list under "Cutting blocks out"); the line and the position are named |
 | `unsupported feed format` | Only Atom and RSS 2.0 are handled (not RSS 1.0/RDF) |
 | `poll failed: ... AUTHENTICATIONFAILED` | Wrong `IMAP_USER`/`IMAP_PASSWORD`; Gmail needs an app password and IMAP enabled |
 | `0 message(s) since ...` | Mail older than `SUBSCRIPTION_LOOKBACK_DAYS` or not in `IMAP_FOLDER` (Gmail: `"[Gmail]/All Mail"`) |
@@ -289,7 +354,7 @@ the new ones win when both are set. On first start the old data folder `~/Librar
 - The hydrator extracts from the server-rendered HTML; pages that build the text with JavaScript are out of reach.
 - `"auto"` is a heuristic, not a replacement for a dedicated extraction service; a reader's own Reader view may do better
   on some pages. Hydrating pays off when you read the feed in several apps or want the text in the feed itself.
-- Only simple selectors (`tag`, `.class`, `tag.class`, `tag#id`, comma lists), no descendant combinators.
+- Selectors and filters see the HTML the server sends, not a rendered page: no `:matches-css()`, no `:xpath()`, nothing that depends on JavaScript or layout.
 - Mail HTML is linearised: table layouts and styling are dropped; text, links, bold/italic and images are kept.
 - One mailbox address per instance; run several copies with different `RSSENHANCER_ENV`/`RSSENHANCER_DIR`/`RSSENHANCER_PORT` for more.
 - Respect the terms of the sites you hydrate; a republished full-text feed is meant for your own reading.
