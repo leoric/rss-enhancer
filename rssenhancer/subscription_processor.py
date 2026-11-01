@@ -14,6 +14,10 @@ Settings (environment or .env):
   IMAP_HOST (imap.gmail.com)  IMAP_USER (address without +tag)  IMAP_FOLDER (INBOX)
   SUBSCRIPTION_POLL_MINUTES (15)  SUBSCRIPTION_LOOKBACK_DAYS (7)  SUBSCRIPTION_FEED_TITLE
   SUBSCRIPTION_FEED_FORMAT (rss | atom)
+Topic filters, applied right after the email is split and before any summary is considered:
+  SUBSCRIPTION_SKIP_KEYWORDS      comma-separated words that drop a topic when its title contains one
+  SUBSCRIPTION_SKIP_KEYWORDS_FILE the same, one per line (`!` starts a comment)
+  SUBSCRIPTION_MIN_TOPIC_WORDS    topics with fewer words are dropped (0 = off)
 Summaries (a retelling, not a gist), sized by two limits:
   SUMMARY_LIMIT_WORDS (500)   topics shorter than this get no summary; topics up to the second
                               limit get a summary of this size
@@ -29,6 +33,7 @@ import imaplib
 import json
 import re
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from email import policy
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from html.parser import HTMLParser
@@ -47,6 +52,8 @@ POLL_MINUTES = float(env("SUBSCRIPTION_POLL_MINUTES", "15"))
 LOOKBACK_DAYS = int(env("SUBSCRIPTION_LOOKBACK_DAYS", "7"))
 FEED_FORMAT = (env("SUBSCRIPTION_FEED_FORMAT", "rss") or "rss").lower()  # rss | atom
 MAX_ITEMS = 500
+SKIP_RULES = []  # compiled title keywords, loaded by make_worker()
+MIN_TOPIC_WORDS = int(env("SUBSCRIPTION_MIN_TOPIC_WORDS", "0"))  # topics with fewer words are dropped; 0 = off
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ADDR_HEADERS = ["To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To"]
 
@@ -346,6 +353,65 @@ def item_author(from_header, subject):
     return base
 
 
+def compile_keywords(items):
+    """Title keywords -> [(keyword as written, compiled regex)]. Matching ignores case.
+      sponsor       a whole word (not "sponsorship")
+      реклам*       a word that starts with it (реклама, рекламный, ...); * may also stand in the middle or at the start
+      read more     a phrase, with any spacing between its words
+      /regex/i      a regular expression searched in the title, with flags i, s, m"""
+    rules = []
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        m = re.fullmatch(r"/(.+)/([a-z]*)", item, re.S)
+        try:
+            if m:
+                flags = (re.I if "i" in m.group(2) else 0) | (re.S if "s" in m.group(2) else 0) | (re.M if "m" in m.group(2) else 0)
+                rx = re.compile(m.group(1), flags)
+            else:
+                body = re.escape(item).replace(r"\*", r"\w*").replace(r"\ ", r"\s+")
+                rx = re.compile(r"(?<!\w)%s(?!\w)" % body, re.I)
+        except re.error as e:
+            raise ValueError("bad title keyword %r: %s" % (item, e))
+        rules.append((item, rx))
+    return rules
+
+
+def load_skip_rules():
+    """Title keywords from SUBSCRIPTION_SKIP_KEYWORDS (comma-separated) and SUBSCRIPTION_SKIP_KEYWORDS_FILE (one per line)."""
+    items = (env("SUBSCRIPTION_SKIP_KEYWORDS") or "").split(",")
+    name = env("SUBSCRIPTION_SKIP_KEYWORDS_FILE")
+    if name:
+        path = Path(name).expanduser()
+        path = path if path.is_absolute() else common.ROOT / path
+        if not path.is_file():
+            raise SystemExit("SUBSCRIPTION_SKIP_KEYWORDS_FILE: %s not found" % path)
+        items += [ln for ln in path.read_text(encoding="utf-8").splitlines() if not ln.lstrip().startswith("!")]
+    try:
+        return compile_keywords(items)
+    except ValueError as e:
+        raise SystemExit("SUBSCRIPTION_SKIP_KEYWORDS: %s" % e)
+
+
+def keep_topics(topics, blocks):
+    """Drop topics whose title contains a skip keyword or that are shorter than MIN_TOPIC_WORDS. These checks come
+    before anything that costs an AI call, so a dropped topic is never summarised."""
+    kept = []
+    for t in topics:
+        hit = next((kw for kw, rx in SKIP_RULES if rx.search(t["title"])), None)
+        if hit is not None:
+            log("  dropped %r: the title contains %r" % (t["title"][:60], hit))
+            continue
+        if MIN_TOPIC_WORDS > 0:
+            words = count_words("\n\n".join(b["text"] for b in blocks[t["start"]: t["end"] + 1] if b["kind"] != "img"))
+            if words < MIN_TOPIC_WORDS:
+                log("  dropped %r: %d words, fewer than %d" % (t["title"][:60], words, MIN_TOPIC_WORDS))
+                continue
+        kept.append(t)
+    return kept
+
+
 def process_message(raw, call_ai):
     msg = email.message_from_bytes(raw, policy=policy.default)
     subject = str(msg["subject"] or "(no subject)").strip()
@@ -362,12 +428,15 @@ def process_message(raw, call_ai):
     if not blocks:
         return []
     topics = split_topics(call_ai, subject, sender, blocks)
+    for i, t in enumerate(topics):
+        t["index"] = i  # the position in the email, kept in the item id even when topics are dropped
+    topics = keep_topics(topics, blocks)
     for t in topics:
         t["summary"] = summarize_topic(call_ai, t["title"], blocks[t["start"]: t["end"] + 1])
     items = []
     for i, t in enumerate(topics):
         items.append({
-            "guid": "%s#%d" % (mid, i),
+            "guid": "%s#%d" % (mid, t["index"]),
             "title": t["title"],
             "author": item_author(sender, subject),
             "html": topic_html(t, blocks, subject, sender),
@@ -512,6 +581,8 @@ def make_worker():
         raise SystemExit("Set IMAP_PASSWORD (use an app password)")
     if FEED_FORMAT not in ("rss", "atom"):
         raise SystemExit("SUBSCRIPTION_FEED_FORMAT must be rss or atom")
+    global SKIP_RULES
+    SKIP_RULES = load_skip_rules()
     name, call_ai = get_provider()
     state = load_state()
     publish_items(state["items"])

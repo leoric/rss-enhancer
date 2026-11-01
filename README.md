@@ -241,6 +241,15 @@ address yourself; confirmation emails of double opt-in arrive as ordinary items.
   `foo+other@baz.com` are ignored and Bcc'd newsletters are found.
 - **Topic splitting:** the email is flattened into numbered blocks; a first AI call returns only titles and block
   ranges, so the original wording and images are never rewritten. Boilerplate is left out.
+- **Topic filters:** right after the split, before anything is summarised, a topic is dropped if its title contains a
+  skip keyword (`SUBSCRIPTION_SKIP_KEYWORDS`, comma-separated, and/or `SUBSCRIPTION_SKIP_KEYWORDS_FILE`, one per line,
+  `!` for comments) or if it is shorter than `SUBSCRIPTION_MIN_TOPIC_WORDS` words (default `0`, off). No AI call is spent
+  on a dropped topic. Matching ignores case and looks at whole words: `sponsor` does not match "Sponsored", `sponsor*`
+  does (a `*` stands for any letters), `*sponsor*` matches anywhere inside a word, `read more` is a phrase, 
+  and `/^re:/i` is a regular expression (put it in the file if it needs a comma).
+  Kept topics keep their position in the email in their id, and an email whose topics are all dropped still counts
+  as processed. If the AI answer cannot be read, the whole email is one topic titled with its subject, which the
+  filters see like any other title.
 - **Summaries:** a second call per topic sends the full text and asks for a faithful retelling, not a description.
 
   | Topic length | Summary |
@@ -299,6 +308,8 @@ Everything is an environment variable or a line in `.env` (real environment wins
 | `SUBSCRIPTION_POLL_MINUTES`, `SUBSCRIPTION_LOOKBACK_DAYS` | `15`, `7` | Mail schedule |
 | `SUBSCRIPTION_FEED_TITLE` | `Mail: ` + masked address | Title of the mail feed |
 | `SUBSCRIPTION_FEED_FORMAT` | `rss` | `atom` publishes the mail feed as Atom |
+| `SUBSCRIPTION_SKIP_KEYWORDS`, `SUBSCRIPTION_SKIP_KEYWORDS_FILE` | empty | Drop topics whose title contains one of these words |
+| `SUBSCRIPTION_MIN_TOPIC_WORDS` | `0` (off) | Drop topics with fewer words than this |
 | `SUMMARY_LIMIT_WORDS`, `SUMMARY_LONG_WORDS`, `SUMMARY_FACTOR`, `SUMMARY_RATIO` | `500`, `1000`, `0.5`, off | Summary sizing |
 
 Data layout in `RSSENHANCER_DIR`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`,
