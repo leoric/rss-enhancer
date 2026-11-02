@@ -17,7 +17,7 @@ Settings (environment or .env):
 Topic filters, applied right after the email is split and before any summary is considered:
   SUBSCRIPTION_SKIP_KEYWORDS      comma-separated words that drop a topic when its title contains one
   SUBSCRIPTION_SKIP_KEYWORDS_FILE the same, one per line (`!` starts a comment)
-  SUBSCRIPTION_MIN_TOPIC_WORDS    topics with fewer words are dropped (0 = off)
+  SUBSCRIPTION_MIN_TOPIC_CHARS    topics shorter than this many characters are dropped (0 = off)
 Summaries (a retelling, not a gist), sized by two limits:
   SUMMARY_LIMIT_WORDS (500)   topics shorter than this get no summary; topics up to the second
                               limit get a summary of this size
@@ -41,7 +41,7 @@ from urllib.parse import quote
 
 from . import atomfeed, common, publisher
 from .ai import extract_json, get_provider, rapid_poll_done
-from .common import atomic_write, env, log
+from .common import Worker, atomic_write, env, log
 
 ADDRESS = (env("SUBSCRIPTION_ADDRESS") or "").lower()
 IMAP_HOST = env("IMAP_HOST", "imap.gmail.com")
@@ -53,7 +53,7 @@ LOOKBACK_DAYS = int(env("SUBSCRIPTION_LOOKBACK_DAYS", "7"))
 FEED_FORMAT = (env("SUBSCRIPTION_FEED_FORMAT", "rss") or "rss").lower()  # rss | atom
 MAX_ITEMS = 500
 SKIP_RULES = []  # compiled title keywords, loaded by make_worker()
-MIN_TOPIC_WORDS = int(env("SUBSCRIPTION_MIN_TOPIC_WORDS", "0"))  # topics with fewer words are dropped; 0 = off
+MIN_TOPIC_CHARS = int(env("SUBSCRIPTION_MIN_TOPIC_CHARS", "0"))  # topics shorter than this many characters are dropped; 0 = off
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ADDR_HEADERS = ["To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To", "X-Forwarded-To"]
 
@@ -395,7 +395,8 @@ def load_skip_rules():
 
 
 def keep_topics(topics, blocks):
-    """Drop topics whose title contains a skip keyword or that are shorter than MIN_TOPIC_WORDS. These checks come
+    """Drop topics whose title contains a skip keyword or whose text is shorter than MIN_TOPIC_CHARS characters
+    (the text of the topic without images, as it would be read). These checks come
     before anything that costs an AI call, so a dropped topic is never summarised."""
     kept = []
     for t in topics:
@@ -403,10 +404,10 @@ def keep_topics(topics, blocks):
         if hit is not None:
             log("  dropped %r: the title contains %r" % (t["title"][:60], hit))
             continue
-        if MIN_TOPIC_WORDS > 0:
-            words = count_words("\n\n".join(b["text"] for b in blocks[t["start"]: t["end"] + 1] if b["kind"] != "img"))
-            if words < MIN_TOPIC_WORDS:
-                log("  dropped %r: %d words, fewer than %d" % (t["title"][:60], words, MIN_TOPIC_WORDS))
+        if MIN_TOPIC_CHARS > 0:
+            chars = sum(len(b["text"]) for b in blocks[t["start"]: t["end"] + 1] if b["kind"] != "img")
+            if chars < MIN_TOPIC_CHARS:
+                log("  dropped %r: %d characters, fewer than %d" % (t["title"][:60], chars, MIN_TOPIC_CHARS))
                 continue
         kept.append(t)
     return kept
@@ -573,14 +574,23 @@ def configured():
     return bool(ADDRESS)
 
 
-def make_worker():
-    """-> (step, interval_seconds) for the orchestrator."""
+def validate():
+    """Check the settings and raise SystemExit with a clear message when they cannot be used. Writes nothing."""
     if "+" not in ADDRESS.split("@")[0]:
         raise SystemExit("Set SUBSCRIPTION_ADDRESS to a plus address, e.g. foo+bar@baz.com")
     if not IMAP_PASSWORD:
         raise SystemExit("Set IMAP_PASSWORD (use an app password)")
     if FEED_FORMAT not in ("rss", "atom"):
         raise SystemExit("SUBSCRIPTION_FEED_FORMAT must be rss or atom")
+    if env("SUBSCRIPTION_MIN_TOPIC_WORDS"):
+        raise SystemExit("SUBSCRIPTION_MIN_TOPIC_WORDS was replaced by SUBSCRIPTION_MIN_TOPIC_CHARS (a number of characters)")
+    load_skip_rules()
+    get_provider()
+
+
+def make_worker():
+    """-> a Worker for the orchestrator."""
+    validate()
     global SKIP_RULES
     SKIP_RULES = load_skip_rules()
     name, call_ai = get_provider()
@@ -589,6 +599,11 @@ def make_worker():
     log("provider=%s  address=%s  feed=%s" % (name, mask_address(ADDRESS), publisher.public_url(publisher.MAIL_FEED)))
 
     def step():
+        global SKIP_RULES
+        try:
+            SKIP_RULES = load_skip_rules()  # the keyword file may have been edited since the last pass
+        except SystemExit as e:
+            log("the keyword list was not reloaded, keeping the previous one: %s" % e)
         try:
             poll(state, call_ai)
             save_state(state)
@@ -596,4 +611,4 @@ def make_worker():
         finally:
             rapid_poll_done()
 
-    return step, POLL_MINUTES * 60
+    return Worker(step, lambda: POLL_MINUTES * 60)

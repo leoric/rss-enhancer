@@ -36,29 +36,71 @@ _LEGACY = {
 }
 
 
+DOTENV_KEYS = set()  # variables that came from .env, not from the real environment (cleared before a restart)
+
+
+def env_file_path():
+    explicit = os.environ.get("RSSENHANCER_ENV") or os.environ.get("MAILRSS_ENV")
+    return Path(explicit) if explicit else ROOT / ".env"
+
+
 def load_dotenv():
     """Load KEY=VALUE lines from .env in the project root (or the file named by RSSENHANCER_ENV).
-    Variables already present in the real environment win."""
-    explicit = os.environ.get("RSSENHANCER_ENV") or os.environ.get("MAILRSS_ENV")
-    path = Path(explicit) if explicit else ROOT / ".env"
+    Variables already present in the real environment win. A value in quotes may run over several lines,
+    which is how a whole JSON config fits into one variable:
+        RSSENHANCER_CONFIG_JSON='{
+          "feeds": [...]
+        }'"""
+    path = env_file_path()
     if not path.is_file():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, val = line.split("=", 1)
         key, val = key.strip(), val.strip()
         if key.startswith("export "):
             key = key[7:].strip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+        if val[:1] in ("'", '"') and not (len(val) >= 2 and val[-1] == val[0]):
+            quote, parts = val[0], [val[1:]]  # the closing quote is the last character of some later line
+            while i < len(lines):
+                nxt = lines[i]
+                i += 1
+                if nxt.rstrip().endswith(quote):
+                    parts.append(nxt.rstrip()[:-1])
+                    break
+                parts.append(nxt)
+            val = "\n".join(parts)
+        elif len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
             val = val[1:-1]
         elif " #" in val:
             val = val.split(" #")[0].rstrip()
-        os.environ.setdefault(key, val)
+        if key not in os.environ:
+            os.environ[key] = val
+            DOTENV_KEYS.add(key)
 
 
 load_dotenv()
+
+
+def file_signature(path):
+    """(mtime, size) of a file, or None when it does not exist: enough to notice an edit."""
+    try:
+        st = Path(path).stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+class Worker(NamedTuple):
+    """What a source hands to the orchestrator."""
+    step: object            # one pass
+    interval: object        # callable -> seconds until the next pass (re-read after every pass)
+    changed: object = None  # callable -> True when a file this source reads has changed: run the next pass now
 
 
 def env(name, default=None):

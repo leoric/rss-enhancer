@@ -9,7 +9,9 @@ For every configured RSS/Atom feed it
      and hands the result to the publisher as `<domain>-<path>.feed.xml`.
 
 Hydrated article text is cached in a state file, so old entries are never fetched or parsed again.
-The hydrator knows nothing about e-mail; it only needs config.json (see config.example.json).
+The hydrator knows nothing about e-mail; it only needs its config: config.json (see config.example.json) or the same
+JSON in the variable RSSENHANCER_CONFIG_JSON (which may live in .env). The config file and the filter files it names
+are read again before every pass, and a change is picked up within seconds.
 
 A feed's "selector" is a CSS-like selector for sites you know, or "auto" for feeds that link to arbitrary
 sites (Hacker News and the like): then the main text of every page is found heuristically ("reader mode").
@@ -24,7 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import atomfeed, common, publisher
-from .common import ROOT, atomic_write, env, http_get, log
+from .common import ROOT, Worker, atomic_write, env, http_get, log
 from .cssfilter import FilterSet, SelectorError, parse_selector
 from .htmlutil import clean_fragment, decode_html, extract_article, extract_html
 
@@ -50,19 +52,28 @@ def config_path():
 
 
 def load_config():
-    """Parsed and validated config, or None when there is no config file."""
-    p = config_path()
-    if not p.is_file():
-        return None
+    """Parsed and validated config, or None when there is none. The config is the JSON in the variable
+    RSSENHANCER_CONFIG_JSON (it can live in .env) or else the file config.json. cfg["_sources"] lists the files read."""
+    inline = env("RSSENHANCER_CONFIG_JSON")
+    if inline:
+        label, base, text, path = "RSSENHANCER_CONFIG_JSON", ROOT, inline, None
+    else:
+        path = config_path()
+        if not path.is_file():
+            return None
+        label, base, text = path.name, path.parent, path.read_text(encoding="utf-8")
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(text)
     except ValueError as e:
-        raise SystemExit("%s is not valid JSON: %s" % (p, e))
+        raise SystemExit("%s is not valid JSON: %s" % (label, e))
+    if not isinstance(raw, dict):
+        raise SystemExit("%s must be a JSON object" % label)
+    sources = [path] if path else []
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in raw.items() if k != "feeds" and not k.startswith("_")})
     feeds = []
     for i, f in enumerate(raw.get("feeds") or [], 1):
-        where = "%s: feed #%d" % (p.name, i)
+        where = "%s: feed #%d" % (label, i)
         if not isinstance(f, dict) or not re.match(r"https?://", str(f.get("url", ""))):
             raise SystemExit("%s needs an http(s) \"url\"" % where)
         if not f.get("selector"):
@@ -89,13 +100,14 @@ def load_config():
             raise SystemExit("%s (%s): \"link_from\" must be \"link\" or \"id\"" % (where, f["url"]))
         if f.get("name") and not publisher.valid_name(f["name"]):
             raise SystemExit("%s (%s): \"name\" must look like something.feed.xml" % (where, f["url"]))
-        f["_rules"], f["_rules_text"] = _build_rules(raw, f, p.parent, where)
+        f["_rules"], f["_rules_text"] = _build_rules(raw, f, base, where, sources)
         feeds.append(f)
     cfg["feeds"] = feeds
+    cfg["_sources"] = sources
     return cfg
 
 
-def _build_rules(raw, feed, base, where):
+def _build_rules(raw, feed, base, where, sources):
     """The feed's cosmetic filters: the config's top-level "remove" / "filters_file" first, then the feed's own.
     -> (FilterSet or None, the filters as text, for the cache signature)"""
     rules = FilterSet()
@@ -114,6 +126,7 @@ def _build_rules(raw, feed, base, where):
                 if not path.is_file():
                     raise SystemExit("%s: filters file %s not found" % (where, path))
                 rules.add_text(path.read_text(encoding="utf-8"), str(path), bare_ok=False)
+                sources.append(path)
         except SelectorError as e:
             raise SystemExit(str(e))
     return (rules if rules else None), rules.signature()
@@ -122,6 +135,13 @@ def _build_rules(raw, feed, base, where):
 def configured():
     cfg = load_config()
     return bool(cfg and cfg["feeds"])
+
+
+def validate():
+    """Read the config and raise SystemExit with a clear message when it cannot be used. Writes nothing."""
+    cfg = load_config()
+    if not cfg or not cfg["feeds"]:
+        raise SystemExit("the hydrator has no feeds configured")
 
 
 def feed_filename(url, override=None):
@@ -441,9 +461,44 @@ def run_once(cfg):
             log("%s failed: %s" % (feed["url"], e))
 
 
+def _signature(paths):
+    return tuple((str(p), common.file_signature(p)) for p in paths)
+
+
 def make_worker():
-    """-> (step, interval_seconds) for the orchestrator."""
+    """-> a Worker for the orchestrator. The config is re-read before every pass when its file (or a filter file it
+    names) has changed; a config that cannot be used leaves the previous one in place."""
     cfg = load_config()
-    for f in cfg["feeds"]:
-        log("hydrating %s -> %s" % (f["url"], publisher.public_url(feed_filename(f["url"], f.get("name")))))
-    return (lambda: run_once(cfg)), float(cfg["poll_minutes"]) * 60
+    if not cfg or not cfg["feeds"]:
+        raise SystemExit("the hydrator has no feeds configured")
+    live = {"cfg": cfg, "paths": cfg["_sources"]}
+    live["sig"] = _signature(live["paths"])
+
+    def announce(c):
+        for f in c["feeds"]:
+            log("hydrating %s -> %s" % (f["url"], publisher.public_url(feed_filename(f["url"], f.get("name")))))
+
+    def reload():
+        sig = _signature(live["paths"])
+        if sig == live["sig"]:
+            return
+        live["sig"] = sig  # looked at once; the next look is after the next edit
+        try:
+            new = load_config()
+        except SystemExit as e:
+            log("the config changed but cannot be used, keeping the previous one: %s" % e)
+            return
+        if not new or not new["feeds"]:
+            log("the config changed but lists no feeds, keeping the previous one")
+            return
+        live["cfg"], live["paths"] = new, new["_sources"]
+        live["sig"] = _signature(live["paths"])
+        log("config reloaded: %d feed(s)" % len(new["feeds"]))
+        announce(new)
+
+    def step():
+        reload()
+        run_once(live["cfg"])
+
+    announce(cfg)
+    return Worker(step, lambda: float(live["cfg"]["poll_minutes"]) * 60, lambda: _signature(live["paths"]) != live["sig"])

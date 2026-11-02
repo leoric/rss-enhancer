@@ -34,7 +34,8 @@ chmod +x *.sh
 
 Open `http://127.0.0.1:8787/` for a list of feeds and add their links to your RSS reader. The mail feed is
 `mail.feed.xml` (also reachable as `/feed.xml`); hydrated feeds are named `<domain>-<path>.feed.xml`.
-`--only hydrator` / `--only subscriptions` runs one source. `--once` does not start the web server.
+`--only hydrator` / `--only subscriptions` runs one source. `--once` does not start the web server. `--check` only checks
+that the settings are usable (exit status 0 or 1) and changes nothing.
 
 ## Feed hydrator
 
@@ -243,12 +244,13 @@ address yourself; confirmation emails of double opt-in arrive as ordinary items.
   ranges, so the original wording and images are never rewritten. Boilerplate is left out.
 - **Topic filters:** right after the split, before anything is summarised, a topic is dropped if its title contains a
   skip keyword (`SUBSCRIPTION_SKIP_KEYWORDS`, comma-separated, and/or `SUBSCRIPTION_SKIP_KEYWORDS_FILE`, one per line,
-  `!` for comments) or if it is shorter than `SUBSCRIPTION_MIN_TOPIC_WORDS` words (default `0`, off). No AI call is spent
+  `!` for comments) or if its text is shorter than `SUBSCRIPTION_MIN_TOPIC_CHARS` characters (default `0`, off; the text of the post without
+  images, as it would be read). No AI call is spent
   on a dropped topic. Matching ignores case and looks at whole words: `sponsor` does not match "Sponsored", `sponsor*`
-  does (a `*` stands for any letters), `*sponsor*` matches anywhere inside a word, `read more` is a phrase, 
-  and `/^re:/i` is a regular expression (put it in the file if it needs a comma).
-  Kept topics keep their position in the email in their id, and an email whose topics are all dropped still counts
-  as processed. If the AI answer cannot be read, the whole email is one topic titled with its subject, which the
+  does (a `*` stands for any letters, so `реклам*` catches реклама, рекламный, рекламации), `*sponsor*` matches anywhere
+  inside a word, `read more` is a phrase, and `/^re:/i` is a regular expression (put it in the file if it needs a
+  comma). Kept topics keep their position in the email in their id, and an email whose topics are all dropped still
+  counts as processed. If the AI answer cannot be read, the whole email is one topic titled with its subject, which the
   filters see like any other title.
 - **Summaries:** a second call per topic sends the full text and asks for a faithful retelling, not a description.
 
@@ -301,6 +303,7 @@ Everything is an environment variable or a line in `.env` (real environment wins
 | `RSSENHANCER_PUBLIC_URL` | `http://127.0.0.1:PORT` | Public base URL used inside feeds |
 | `RSSENHANCER_DIR` | `~/Library/Application Support/RssEnhancer` | Feeds and state |
 | `RSSENHANCER_CONFIG` | `config.json` here | Hydrator config file |
+| `RSSENHANCER_CONFIG_JSON` | empty | The hydrator config as JSON in the variable itself (it may live in `.env`, see below); wins over the file |
 | `RSSENHANCER_ENV` | `.env` here | Alternative env file |
 | `RSSENHANCER_ACCESS_LOG` | `1` | Log each request with its User-Agent |
 | `SUBSCRIPTION_ADDRESS`, `IMAP_PASSWORD` | | Mail source (required for it) |
@@ -309,11 +312,47 @@ Everything is an environment variable or a line in `.env` (real environment wins
 | `SUBSCRIPTION_FEED_TITLE` | `Mail: ` + masked address | Title of the mail feed |
 | `SUBSCRIPTION_FEED_FORMAT` | `rss` | `atom` publishes the mail feed as Atom |
 | `SUBSCRIPTION_SKIP_KEYWORDS`, `SUBSCRIPTION_SKIP_KEYWORDS_FILE` | empty | Drop topics whose title contains one of these words |
-| `SUBSCRIPTION_MIN_TOPIC_WORDS` | `0` (off) | Drop topics with fewer words than this |
+| `SUBSCRIPTION_MIN_TOPIC_CHARS` | `0` (off) | Drop posts whose text is shorter than this many characters |
 | `SUMMARY_LIMIT_WORDS`, `SUMMARY_LONG_WORDS`, `SUMMARY_FACTOR`, `SUMMARY_RATIO` | `500`, `1000`, `0.5`, off | Summary sizing |
 
 Data layout in `RSSENHANCER_DIR`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`,
 `rapid-mlx.log`. Only `feeds/` is ever served.
+
+## Changing settings while it runs
+
+The program reads its settings again while it runs, so there is no need to restart it by hand:
+
+| What you edit | What happens |
+|---|---|
+| `config.json` and the filter files it names (`filters_file`) | read again before every pass; an edit starts a pass within a few seconds. A config that cannot be used (bad JSON, unknown option, missing file) is reported in the log and the previous one stays, until the next edit |
+| `SUBSCRIPTION_SKIP_KEYWORDS_FILE` | read again before every pass |
+| `.env` | the new settings are first checked in a separate process (`--check`). If they are usable, the passes that are running finish, then the program replaces itself in place (same process id, so launchd does not notice) and starts with the new settings; the web server is down for a moment. If they are not usable, the log says what is wrong and the program keeps running with the old settings until the next edit |
+| `config.json` created later | when only the mail source is running, creating the file starts the hydrator (this is also a restart) |
+
+`poll_minutes` and the other global options take effect with the next pass. Variables set in the real environment (a
+shell, the launchd plist) are not reloaded, and they win over `.env`, so a value set there cannot be changed from `.env`.
+
+### Everything in `.env`: the config as JSON in a variable
+
+If you would rather have one file to edit, the hydrator config can live in `.env` as the value of
+`RSSENHANCER_CONFIG_JSON`. A value in quotes may run over several lines, so the JSON can keep its layout:
+
+```
+RSSENHANCER_CONFIG_JSON='{
+  "poll_minutes": 30,
+  "remove": ["##.cookie-banner"],
+  "feeds": [
+    {"url": "https://hnrss.org/frontpage", "selector": "auto", "summary": "start", "summary_label": ""}
+  ]
+}'
+```
+
+- Use single quotes around the value so the double quotes of the JSON need no escaping. An apostrophe inside is fine
+  (`:has-text(Don't miss)`) unless a line of the JSON ends with one.
+- When the variable is set, `config.json` is ignored. Relative paths (`filters_file`) are relative to the project folder.
+- Comments are not possible in JSON; keys that start with `_` are ignored, so `"_comment": "..."` works.
+- A change of `.env` restarts the program (see above), while a change of `config.json` is applied in place. For frequent
+  edits of the feed list the file is therefore the lighter way.
 
 ## Run in the background
 
