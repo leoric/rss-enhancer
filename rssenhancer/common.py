@@ -47,19 +47,55 @@ PORT = int(env("RSSENHANCER_PORT", 8787))
 HOST = env("RSSENHANCER_HOST", "127.0.0.1")
 BASE = (env("RSSENHANCER_PUBLIC_URL") or "http://127.0.0.1:%d" % PORT).rstrip("/")
 DATA = Path(env("RSSENHANCER_DIR", "~/Library/Application Support/RssEnhancer")).expanduser()
+LOG_DIR = Path(env("RSSENHANCER_LOG_DIR", "~/Library/Logs/RssEnhancer")).expanduser()  # RssEnhancer.log (launchd), stats.log, rapid-mlx.log
 
 
 
-def log(*a):
+def _source():
+    """Where a line belongs when the caller gave no tag: the worker's name, `main` for the main thread, `app`
+    for any other anonymous thread. A line always has a tag."""
     name = threading.current_thread().name
-    tag = "" if name == "MainThread" or name.startswith("Thread-") else " [%s]" % name
-    print(time.strftime("%H:%M:%S") + tag, *a, file=sys.stderr, flush=True)
+    if name == "MainThread":
+        return "main"
+    return "app" if name.startswith("Thread-") else name
+
+
+def log(*a, level="INFO", tag=None):
+    """One line on stderr: `LEVEL HH:MM:SS [source] message`. The level comes first so lines can be grepped
+    or sorted by it. The source is `tag` when given, otherwise the thread's name (see _source); HTTP request
+    threads are anonymous, so the publisher passes tag="publisher"."""
+    print("%-5s %s [%s]" % (level, time.strftime("%H:%M:%S"), tag or _source()), *a, file=sys.stderr, flush=True)
+
+
+def warn(*a, **kw):
+    log(*a, level="WARN", **kw)
+
+
+def error(*a, **kw):
+    log(*a, level="ERROR", **kw)
+
+
+_stats_lock = threading.Lock()
+
+
+def stats(message):
+    """Append a line to stats.log in the log directory (with the date, since the file outlives runs).
+    Used for numbers about how well things work, e.g. how much the summaries shrink the text; the same
+    line is meant to go to the normal log too, this file only collects them in one place."""
+    line = "%s [%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), _source(), message)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with _stats_lock, open(LOG_DIR / "stats.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError as e:
+        warn("cannot write stats.log: %s" % e)
 
 
 def prepare_data_dir():
-    """Create the data directory layout."""
+    """Create the data directory layout and the log directory."""
     for sub in ("feeds", "state", "state/hydrator"):
         (DATA / sub).mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def atomic_write(path, data):

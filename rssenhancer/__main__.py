@@ -28,7 +28,7 @@ import threading
 import time
 
 from . import ai, common, feed_hydrator, publisher, subscription_processor
-from .common import log
+from .common import error, log, warn
 
 COMPONENTS = {
     "subscriptions": (subscription_processor, "set subscriptions.address and subscriptions.imap.password in config.toml"),
@@ -42,7 +42,7 @@ def _run(name, worker, once, stop):
         try:
             worker.step()
         except Exception as e:
-            log("failed: %s" % e)
+            error("failed: %s" % e)
         if once:
             return
         deadline = time.monotonic() + worker.interval()
@@ -64,13 +64,13 @@ def _restart_if_usable(stop, threads, only):
     try:
         r = subprocess.run(cmd, cwd=str(common.ROOT), env=clean, capture_output=True, text=True, timeout=180)
     except subprocess.TimeoutExpired:
-        log("checking the new settings took too long; keeping the old ones")
+        warn("checking the new settings took too long; keeping the old ones", tag="main")
         return
     if r.returncode != 0:
         tail = (r.stderr.strip() or r.stdout.strip()).splitlines()[-3:]
-        log("the new settings cannot be used, keeping the old ones: %s" % " | ".join(tail))
+        error("the new settings cannot be used, keeping the old ones: %s" % " | ".join(tail), tag="main")
         return
-    log("settings changed: restarting (passes that are running finish first)")
+    log("settings changed: restarting (passes that are running finish first)", tag="main")
     stop.set()
     for t in threads:
         t.join()
@@ -123,7 +123,7 @@ def main(argv=None):
         if args.only and name not in args.only:
             continue
         if not module.configured():
-            log("%s: not configured (%s)" % (name, hint))
+            log("not configured (%s)" % hint, tag=name)
             continue
         workers.append((name, module.make_worker()))
     if not workers:
@@ -131,7 +131,7 @@ def main(argv=None):
 
     if not args.once:
         publisher.serve()
-        log("publisher: %s/ (listening on %s:%d)" % (common.BASE, common.HOST, common.PORT))
+        log("%s/ (listening on %s:%d)" % (common.BASE, common.HOST, common.PORT), tag="publisher")
 
     stop = threading.Event()
     threads = [threading.Thread(target=_run, args=(n, w, args.once, stop), name=n, daemon=True) for n, w in workers]

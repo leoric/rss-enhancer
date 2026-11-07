@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 from . import atomfeed, common, publisher
 from .ai import extract_json, get_provider, rapid_poll_done
-from .common import Worker, atomic_write, env, log
+from .common import Worker, atomic_write, env, error, log, stats, warn
 
 ADDRESS = (env("SUBSCRIPTION_ADDRESS") or "").lower()
 IMAP_HOST = env("IMAP_HOST", "imap.gmail.com")
@@ -235,7 +235,7 @@ def split_topics(call_ai, subject, sender, blocks):
         if topics:
             return topics
     except (ValueError, KeyError, TypeError) as e:
-        log("could not parse AI output, publishing whole email:", e)
+        warn("could not parse AI output, publishing whole email:", e)
     return [{"title": subject, "summary": "", "start": 0, "end": len(blocks) - 1}]
 
 
@@ -296,10 +296,14 @@ def summarize_topic(call_ai, title, blocks):
         return ""
     summary, retried = retell(call_ai, title, text, target)
     if not summary:
-        log("empty summary for %r (reasoning model out of tokens?)" % title[:50])
+        msg = "empty summary for %r (reasoning model out of tokens?)" % title[:50]
+        warn(msg)
+        stats(msg)
     else:
-        log("  %s: %d -> %d words (target %d%s)" % (title[:50], words, count_words(summary), target,
-                                                    ", retried" if retried else ""))
+        msg = "%s: %d -> %d words (target %d%s)" % (title[:50], words, count_words(summary), target,
+                                                    ", retried" if retried else "")
+        log(msg)
+        stats(msg)
     return summary
 
 
@@ -473,7 +477,7 @@ def poll(state, call_ai):
         typ, sel = M.select('"%s"' % FOLDER, readonly=True)
         if typ != "OK":
             raise RuntimeError("cannot open folder %r" % FOLDER)
-        log("logged in as %s, folder %r has %s message(s)" % (IMAP_USER, FOLDER, sel[0].decode()))
+        log("logged in as %s, folder %r has %s message(s)" % (mask_address(IMAP_USER), FOLDER, sel[0].decode()))
         uv = M.response("UIDVALIDITY")[1][0].decode()
         if state.get("uidvalidity") != uv:
             state["uidvalidity"], state["seen"] = uv, []
@@ -486,16 +490,16 @@ def poll(state, call_ai):
         uids = [int(u) for u in found if int(u) not in seen]
         log("%d message(s) since %s, %d not checked yet" % (len(found), since, len(uids)))
         if not found:
-            log("nothing in the last %d days; check IMAP_FOLDER (Gmail: '[Gmail]/All Mail' if a filter "
+            warn("nothing in the last %d days; check IMAP_FOLDER (Gmail: '[Gmail]/All Mail' if a filter "
                 "skips the inbox) or raise SUBSCRIPTION_LOOKBACK_DAYS" % LOOKBACK_DAYS)
         if not uids:
             return
         sample = []
         hits = matching_uids(M, uids, ADDRESS, sample)
         seen.update(u for u in uids if u not in set(hits))  # never re-check non-matching mail
-        log("%d of %d new message(s) addressed to %s" % (len(hits), len(uids), ADDRESS))
+        log("%d of %d new message(s) addressed to %s" % (len(hits), len(uids), mask_address(ADDRESS)))
         if not hits:
-            log("no match. Recipients on the first %d message(s): %s" % (len(sample), " | ".join(sample)))
+            warn("no match. Recipients on the first %d message(s): %s" % (len(sample), scrub(" | ".join(sample))))
 
         for uid in hits:
             try:
@@ -503,7 +507,7 @@ def poll(state, call_ai):
                 raw = next(x[1] for x in data if isinstance(x, tuple))
                 new = process_message(raw, call_ai)
             except Exception as e:  # leave unseen so it is retried next poll
-                log("uid %d failed, will retry: %s" % (uid, e))
+                error("uid %d failed, will retry: %s" % (uid, scrub(str(e))))
                 continue
             known = {it["guid"] for it in state["items"]}
             state["items"] = sorted([i for i in new if i["guid"] not in known] + state["items"],
@@ -577,14 +581,15 @@ def make_worker():
     name, call_ai = get_provider()
     state = load_state()
     publish_items(state["items"])
-    log("provider=%s  address=%s  feed=%s" % (name, mask_address(ADDRESS), publisher.public_url(publisher.MAIL_FEED)))
+    log("provider=%s  address=%s  feed=%s" % (name, mask_address(ADDRESS), publisher.public_url(publisher.MAIL_FEED)),
+        tag="subscriptions")
 
     def step():
         global SKIP_RULES
         try:
             SKIP_RULES = load_skip_rules()  # the keyword file may have been edited since the last pass
         except SystemExit as e:
-            log("the keyword list was not reloaded, keeping the previous one: %s" % e)
+            warn("the keyword list was not reloaded, keeping the previous one: %s" % e)
         try:
             poll(state, call_ai)
             save_state(state)

@@ -6,6 +6,7 @@ port = 8787
 host = "127.0.0.1"                 # Use "0.0.0.0" when hosting on a server.
 public_url = ""                    # Empty means http://127.0.0.1:<port>.
 data_dir = "~/Library/Application Support/RssEnhancer"
+log_dir = "~/Library/Logs/RssEnhancer"   # RssEnhancer.log, stats.log, rapid-mlx.log
 access_log = true
 
 [subscriptions]

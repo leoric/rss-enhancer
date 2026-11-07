@@ -296,7 +296,7 @@ load the model, try `RAPID_MLX_ARGS="--no-mllm"`.
 
 All settings live in one `config.toml`, copied from `config.example.toml`. Python 3.12+'s standard-library `tomllib` reads it. TOML comments and native arrays are supported; secrets should be protected with `chmod 600 config.toml`.
 
-- `[app]`: `port`, `host`, `public_url`, `data_dir`, `access_log`.
+- `[app]`: `port`, `host`, `public_url`, `data_dir`, `log_dir`, `access_log`.
 - `[subscriptions]`: mailbox address, feed title/format, polling, topic filters and `[[subscriptions.skip_keywords]]` is not used: `skip_keywords` is a plain string array.
 - `[subscriptions.imap]`: `host`, `user`, `password`, `folder`.
 - `[subscriptions.summary]`: `limit_words`, `long_words`, `factor`, `ratio`.
@@ -327,14 +327,16 @@ The complete list of options, defaults and comments is in `config.example.toml`.
 
 The process watches `config.toml`. After an edit it checks the new configuration in a separate process (`--check`). If valid, running passes finish and the process replaces itself in place; if invalid, the error is logged and the old process keeps running. Filter files named by `filters_file` are read again on the next hydrator pass.
 
-Data layout in `app.data_dir`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`, `rapid-mlx.log`. Only `feeds/` is served.
+Data layout in `app.data_dir`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`. Only `feeds/` is served.
+
+Logs live in `app.log_dir` (default `~/Library/Logs/RssEnhancer/`): `RssEnhancer.log` (everything the program prints, written by the launchd agent), `stats.log` (summary size statistics) and `rapid-mlx.log`.
 
 ## Run in the background
 
 ```bash
 ./install-launchd.sh        # per-user launchd agent: starts at login, restarts on crash
 ./uninstall-launchd.sh      # remove it (feeds and state are kept)
-tail -f ~/Library/Logs/RssEnhancer.log
+tail -f ~/Library/Logs/RssEnhancer/RssEnhancer.log
 ```
 
 Settings are read from `config.toml` next to the code, so no secrets end up in the plist.

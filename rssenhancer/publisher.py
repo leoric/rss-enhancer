@@ -130,7 +130,7 @@ class FeedHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if len(args) == 3 and bool(env("RSSENHANCER_ACCESS_LOG", True)):  # (request line, status, size)
             log("http %s -> %s from %s (UA: %s)" % (args[0], args[1], self.client_address[0],
-                                                    self.headers.get("User-Agent", "-")))
+                                                    self.headers.get("User-Agent", "-")), tag="publisher")
 
 
 def serve():

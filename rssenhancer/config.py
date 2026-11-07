@@ -12,6 +12,7 @@ KEYS = {
     "RSSENHANCER_HOST": "app.host",
     "RSSENHANCER_PUBLIC_URL": "app.public_url",
     "RSSENHANCER_DIR": "app.data_dir",
+    "RSSENHANCER_LOG_DIR": "app.log_dir",
     "RSSENHANCER_ACCESS_LOG": "app.access_log",
     "SUBSCRIPTION_ADDRESS": "subscriptions.address",
     "IMAP_HOST": "subscriptions.imap.host",

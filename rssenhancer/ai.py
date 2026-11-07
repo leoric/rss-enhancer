@@ -146,7 +146,7 @@ def stop_rapid_mlx():
     global _rapid_proc
     p, _rapid_proc = _rapid_proc, None
     if p and p.poll() is None:
-        log("stopping rapid-mlx")
+        log("stopping rapid-mlx", tag="ai")
         try:
             os.killpg(p.pid, signal.SIGTERM)
             p.wait(timeout=30)
@@ -174,7 +174,7 @@ def ensure_local(autostart):
             else:
                 _local_model = ids[0]
                 if not _local_noted:
-                    log("%s is already serving %s; using it instead of %s" % (LOCAL_URL, ids[0], LOCAL_MODEL))
+                    log("%s is already serving %s; using it instead of %s" % (LOCAL_URL, ids[0], LOCAL_MODEL), tag="ai")
                     _local_noted = True
         return
     if not autostart:
@@ -190,19 +190,20 @@ def ensure_local(autostart):
             raise RuntimeError("rapid-mlx not found (brew install rapid-mlx, or set RAPID_MLX_BIN)")
         cmd = [binary, "serve", LOCAL_MODEL, "--host", LOCAL_HOST, "--port", str(LOCAL_PORT)]
         cmd += list(env("RAPID_MLX_ARGS", []) or [])
-        log("starting:", " ".join(cmd))
-        logf = open(common.DATA / "rapid-mlx.log", "ab")
+        log("starting:", " ".join(cmd), tag="ai")
+        common.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        logf = open(common.LOG_DIR / "rapid-mlx.log", "ab")
         _rapid_proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
     deadline = time.time() + RAPID_STARTUP_SECONDS
     while time.time() < deadline:
         if _rapid_proc.poll() is not None:
             _rapid_failed = True
             raise RuntimeError("rapid-mlx exited with code %s (is port %d busy?), see %s"
-                               % (_rapid_proc.returncode, LOCAL_PORT, common.DATA / "rapid-mlx.log"))
+                               % (_rapid_proc.returncode, LOCAL_PORT, common.LOG_DIR / "rapid-mlx.log"))
         st, _ = local_probe()
         if st == "up":
             _local_model = LOCAL_MODEL
-            log("rapid-mlx is ready")
+            log("rapid-mlx is ready", tag="ai")
             return
         if st == "foreign":
             _rapid_failed = True

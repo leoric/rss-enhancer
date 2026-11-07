@@ -26,7 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import atomfeed, common, publisher
-from .common import ROOT, Worker, atomic_write, env, http_get, log
+from .common import ROOT, Worker, atomic_write, env, error, http_get, log, warn
 from .cssfilter import FilterSet, SelectorError, parse_selector
 from .htmlutil import clean_fragment, decode_html, extract_article, extract_html
 
@@ -40,6 +40,10 @@ DEFAULTS = {"poll_minutes": 60, "request_delay": 1.0, "max_items_per_run": 30, "
 # sites whose pages are no articles (used with "auto" unless the feed sets its own "skip_hosts")
 DEFAULT_SKIP_HOSTS = ["youtube.com", "youtu.be", "vimeo.com", "twitch.tv", "twitter.com", "x.com", "instagram.com",
                       "facebook.com", "tiktok.com", "linkedin.com"]
+
+
+class NotArticle(ValueError):
+    """The page was fetched but holds no usable article text. Not a fault: it happens all the time."""
 
 
 class Skip(Exception):
@@ -347,10 +351,12 @@ def fetch_article(url, feed, cfg):
     rules, host = feed.get("_rules"), (urlparse(r.url).hostname or "").lower()
     out = extract_article(page, r.url, rules, host) if auto else extract_html(page, feed["selector"], r.url, rules, host)
     if not out.strip():
-        raise ValueError("no article text found" if auto else "selector %r matched nothing" % feed["selector"])
+        if auto:
+            raise NotArticle("no article text found")
+        raise ValueError("selector %r matched nothing" % feed["selector"])
     words = len(re.sub(r"<[^>]*>", " ", out).split())
     if words < feed.get("min_words", 60 if auto else 0):
-        raise ValueError("only %d words extracted, probably not an article" % words)
+        raise NotArticle("only %d words extracted, probably not an article" % words)
     return out
 
 
@@ -401,7 +407,7 @@ def refresh(feed, cfg):
             link = article_url(el, fmt, feed.get("link_from", "link"))
             html_text, tries, fetched = None, (rec or {}).get("tries", 0) + 1, False
             if not link:
-                log("%s: no article link found for %s" % (name, key))
+                warn("%s: no article link found for %s" % (name, key))
             elif fmt == "rss" and _text(el.find("comments")) == link:
                 tries = MAX_TRIES  # the link is the discussion itself (a text post such as Ask HN): nothing to fetch
             else:
@@ -414,8 +420,11 @@ def refresh(feed, cfg):
                 except Skip as e:
                     log("%s: skipped %s (%s)" % (name, link, e))
                     tries = MAX_TRIES
+                except NotArticle as e:
+                    log("%s: %s: %s" % (name, link, e))  # INFO
                 except Exception as e:
-                    log("%s: %s: %s" % (name, link, e))
+                    # HTTP errors already name the URL; do not print it twice
+                    warn("%s: %s" % (name, e) if link in str(e) else "%s: %s: %s" % (name, link, e))
             rec = st["items"][key] = {"html": html_text, "tries": tries}
             done += 1 if fetched else 0
         if rec and rec.get("html"):
@@ -455,7 +464,7 @@ def run_once(cfg):
         try:
             refresh(feed, cfg)
         except Exception as e:  # one broken feed must not stop the others
-            log("%s failed: %s" % (feed["url"], e))
+            error("%s failed: %s" % (feed["url"], e))
 
 
 def _signature(paths):
@@ -473,7 +482,8 @@ def make_worker():
 
     def announce(c):
         for f in c["feeds"]:
-            log("hydrating %s -> %s" % (f["url"], publisher.public_url(feed_filename(f["url"], f.get("name")))))
+            log("hydrating %s -> %s" % (f["url"], publisher.public_url(feed_filename(f["url"], f.get("name")))),
+                tag="hydrator")
 
     def reload():
         sig = _signature(live["paths"])
@@ -483,10 +493,10 @@ def make_worker():
         try:
             new = load_config()
         except SystemExit as e:
-            log("the config changed but cannot be used, keeping the previous one: %s" % e)
+            error("the config changed but cannot be used, keeping the previous one: %s" % e)
             return
         if not new or not new["feeds"]:
-            log("the config changed but lists no feeds, keeping the previous one")
+            warn("the config changed but lists no feeds, keeping the previous one")
             return
         live["cfg"], live["paths"] = new, new["_sources"]
         live["sig"] = _signature(live["paths"])
