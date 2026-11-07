@@ -67,13 +67,14 @@ Rules:
 - start/end are inclusive block numbers. Topics are in order and must not overlap.
 - Each topic is one self-contained story/item/section. If the whole email is a single story, return one topic.
 - Include images that belong to a topic inside its range.
-- Leave out boilerplate (unsubscribe links, footers, ads, "view in browser", sponsor blurbs) by not covering those blocks.
+- Leave out boilerplate and promotions (unsubscribe links, footers, ads, subscription or paywall offers such as "Subscribe to ... for unlimited access", "view in browser", sponsor blurbs, calls to action) by not covering those blocks.
 - title: under 90 characters, descriptive, no clickbait.
 No markdown, no commentary, just the JSON."""
 
 SUMMARY_PROMPT = """You condense an article or newsletter section into a faithful retelling.
 - Retell what the text says: keep every concrete fact, number, name, date, claim, argument and conclusion, in the original order and in the same language as the text.
-- Remove only the water: introductions, repetition, rhetorical flourishes, anecdotes that carry no information, promotions and calls to action.
+- Remove only the water: introductions, repetition, rhetorical flourishes, anecdotes that carry no information.
+- ALWAYS omit boilerplate and promotions, even when they sit in the middle of the text and even when they are the only thing a paragraph says: subscription and paywall offers (\"Subscribe to ... for unlimited access\", \"Sign up\", \"Get the app\"), newsletter plugs, sponsor and advertising blurbs, calls to action, \"read more\" / \"view in browser\" lines, unsubscribe and legal footers, social-media prompts, author bios and copyright notices. They are never part of the story: do not quote, paraphrase or mention them.
 - Do NOT describe the text ("the article discusses...", "this section covers..."). Write the content itself, as if the author said it in fewer words.
 - Add nothing that is not in the text, and do not evaluate it. Do not add an introduction, conclusion or transitions of your own.
 - Length: about %(target)d words (the text has about %(words)d). Do not go over %(limit)d words.
