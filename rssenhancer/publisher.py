@@ -15,7 +15,7 @@ from urllib.parse import quote, unquote
 from . import common
 from .common import atomic_write, env, log
 
-MAIL_FEED = "mail.feed.xml"          # the subscription processor's feed; /feed.xml is kept as an alias
+MAIL_FEED = "mail.feed.xml"          # the subscription processor's feed
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}\.feed\.xml$")
 
 
@@ -102,8 +102,6 @@ class FeedHandler(BaseHTTPRequestHandler):
         if path == "/":
             return self._index(head_only)
         name = path.lstrip("/")
-        if name == "feed.xml":
-            name = MAIL_FEED
         if not valid_name(name):
             return self._reply(404, b"not found\n", head_only=head_only)
         try:
@@ -130,7 +128,7 @@ class FeedHandler(BaseHTTPRequestHandler):
         self._send(True)
 
     def log_message(self, fmt, *args):
-        if len(args) == 3 and env("RSSENHANCER_ACCESS_LOG", "1") == "1":  # (request line, status, size)
+        if len(args) == 3 and bool(env("RSSENHANCER_ACCESS_LOG", True)):  # (request line, status, size)
             log("http %s -> %s from %s (UA: %s)" % (args[0], args[1], self.client_address[0],
                                                     self.headers.get("User-Agent", "-")))
 

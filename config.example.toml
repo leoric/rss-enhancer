@@ -1,0 +1,109 @@
+# RssEnhancer configuration. Python 3.12+ (tomllib).
+# Copy this file to config.toml. Keep secrets private: chmod 600 config.toml.
+
+[app]
+port = 8787
+host = "127.0.0.1"                 # Use "0.0.0.0" when hosting on a server.
+public_url = ""                    # Empty means http://127.0.0.1:<port>.
+data_dir = "~/Library/Application Support/RssEnhancer"
+access_log = true
+
+[subscriptions]
+# Leave address empty to disable the mail source.
+address = ""
+feed_title = ""                    # Empty means "Mail: <masked address>".
+feed_format = "rss"                # "rss" or "atom".
+poll_minutes = 15
+lookback_days = 7
+min_topic_chars = 0                # Drop shorter topics; 0 disables this filter.
+skip_keywords = [
+    # "sponsor*",
+    # "advertisement",
+]
+skip_keywords_file = ""            # Optional UTF-8 file, one rule per line; ! starts a comment.
+
+[subscriptions.imap]
+host = "imap.gmail.com"
+user = ""                          # Empty means address without the +tag.
+password = ""                      # Gmail: use an App Password.
+folder = "INBOX"                   # Gmail: "[Gmail]/All Mail" if needed.
+
+[subscriptions.summary]
+limit_words = 500
+long_words = 1000
+factor = 0.5
+ratio = 0.0                        # 0 disables the extra cap; e.g. 0.5.
+
+[ai]
+# "anthropic", "gemini", "openai", "deepseek", "local" or "rapid-mlx".
+# Leave empty to auto-detect a configured provider.
+provider = ""
+
+[ai.anthropic]
+api_key = ""
+auth_token = ""
+base_url = "https://api.anthropic.com"
+model = "claude-haiku-5-5"
+
+[ai.gemini]
+api_key = ""
+model = "gemini-2.5-flash"
+
+[ai.openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+[ai.deepseek]
+api_key = ""
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+
+[ai.local]
+base_url = "http://127.0.0.1:8000/v1"
+model = "mlx-community/Qwen3.6-35B-A3B-5bit"
+api_key = ""
+on_mismatch = "use"                # "use" or "fail".
+extra_body = {}                    # Extra OpenAI-compatible request fields.
+
+[ai.rapid_mlx]
+binary = ""                        # Optional explicit path to rapid-mlx.
+args = []                          # Extra CLI arguments, e.g. ["--no-mllm"].
+startup_seconds = 900
+stop_after_poll = true
+
+[hydrator]
+poll_minutes = 60
+request_delay = 1.0
+max_items_per_run = 30
+timeout = 30
+allow_private_hosts = false
+# Global cleanup filters, applied before per-feed filters.
+remove = [
+    # "##.cookie-banner",
+    # "##.advertisement",
+]
+filters_file = [
+    # "filters/common.txt",
+]
+
+# Each feed is a separate TOML array-of-tables entry.
+[[hydrator.feeds]]
+url = "https://hnrss.org/frontpage"
+selector = "auto"                  # "auto" reader mode or a CSS-like selector.
+summary = "start"                  # "remove", "start" or "end".
+summary_label = ""
+# name = "hackernews.feed.xml"
+# format = "original"              # "original" or "atom".
+# drop_unhydrated = true
+# link_from = "link"               # "link" or "id".
+# min_words = 60
+# skip_hosts = ["youtube.com", "vimeo.com"]
+# remove = ["##.cookie-banner"]
+# filters_file = ["filters/hackernews.txt"]
+
+# Add more feeds by repeating [[hydrator.feeds]]:
+# [[hydrator.feeds]]
+# url = "https://example.com/feed.xml"
+# selector = "article .content"
+# summary = "remove"

@@ -9,9 +9,8 @@ For every configured RSS/Atom feed it
      and hands the result to the publisher as `<domain>-<path>.feed.xml`.
 
 Hydrated article text is cached in a state file, so old entries are never fetched or parsed again.
-The hydrator knows nothing about e-mail; it only needs its config: config.json (see config.example.json) or the same
-JSON in the variable RSSENHANCER_CONFIG_JSON (which may live in .env). The config file and the filter files it names
-are read again before every pass, and a change is picked up within seconds.
+The hydrator reads the [hydrator] section and its [[hydrator.feeds]] entries from config.toml.
+The config file and the filter files it names are read again before every pass.
 
 A feed's "selector" is a CSS-like selector for sites you know, or "auto" for feeds that link to arbitrary
 sites (Hacker News and the like): then the main text of every page is found heuristically ("reader mode").
@@ -19,6 +18,7 @@ sites (Hacker News and the like): then the main text of every page is found heur
 import html
 import io
 import json
+import tomllib
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -48,27 +48,24 @@ class Skip(Exception):
 
 # ------------------------------------------------------------------ configuration
 def config_path():
-    return Path(env("RSSENHANCER_CONFIG") or ROOT / "config.json")
+    return common.config.CONFIG_PATH
 
 
 def load_config():
-    """Parsed and validated config, or None when there is none. The config is the JSON in the variable
-    RSSENHANCER_CONFIG_JSON (it can live in .env) or else the file config.json. cfg["_sources"] lists the files read."""
-    inline = env("RSSENHANCER_CONFIG_JSON")
-    if inline:
-        label, base, text, path = "RSSENHANCER_CONFIG_JSON", ROOT, inline, None
-    else:
-        path = config_path()
-        if not path.is_file():
-            return None
-        label, base, text = path.name, path.parent, path.read_text(encoding="utf-8")
+    """Parse and validate [hydrator] and [[hydrator.feeds]] from config.toml."""
+    path = config_path()
+    if not path.is_file():
+        return None
+    label, base = path.name, path.parent
     try:
-        raw = json.loads(text)
-    except ValueError as e:
-        raise SystemExit("%s is not valid JSON: %s" % (label, e))
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        raise SystemExit("%s is not valid TOML: %s" % (label, e))
+    raw = document.get("hydrator", {})
     if not isinstance(raw, dict):
-        raise SystemExit("%s must be a JSON object" % label)
-    sources = [path] if path else []
+        raise SystemExit("[hydrator] must be a TOML table")
+    sources = [path]
     cfg = dict(DEFAULTS)
     cfg.update({k: v for k, v in raw.items() if k != "feeds" and not k.startswith("_")})
     feeds = []

@@ -1,7 +1,7 @@
 # RssEnhancer
 
 Turns feeds into something worth reading, and serves them as local RSS. Pure Python standard library, built for macOS
-(works anywhere with Python 3.9+).
+(works anywhere with Python 3.12+).
 
 ```
                  +-----------------------+
@@ -25,29 +25,30 @@ subscription processor never reads RSS. Configure either one, or both.
 ## Quick start
 
 ```bash
-cp env.example .env && chmod 600 .env             # mail source + AI provider (skip for hydrator only)
-cp config.example.json config.json                # feed hydrator: which feeds, which selectors
+cp config.example.toml config.toml && chmod 600 config.toml  # all settings, including secrets and feed sources
 chmod +x *.sh
 ./run.sh --once                                   # refresh every source once, write the feeds, exit
 ./run.sh                                          # run forever: web server + sources in parallel
 ```
 
 Open `http://127.0.0.1:8787/` for a list of feeds and add their links to your RSS reader. The mail feed is
-`mail.feed.xml` (also reachable as `/feed.xml`); hydrated feeds are named `<domain>-<path>.feed.xml`.
+`mail.feed.xml`; hydrated feeds are named `<domain>-<path>.feed.xml`.
 `--only hydrator` / `--only subscriptions` runs one source. `--once` does not start the web server. `--check` only checks
 that the settings are usable (exit status 0 or 1) and changes nothing.
 
 ## Feed hydrator
 
-Configured in `config.json` (see `config.example.json`):
+Configured in `config.toml` under `[hydrator]` and `[[hydrator.feeds]]`:
 
-```json
-{
-  "poll_minutes": 60,
-  "feeds": [
-    {"url": "https://hnrss.org/frontpage", "selector": "auto", "summary": "start", "summary_label": ""}
-  ]
-}
+```toml
+[hydrator]
+poll_minutes = 60
+
+[[hydrator.feeds]]
+url = "https://hnrss.org/frontpage"
+selector = "auto"
+summary = "start"
+summary_label = ""
 ```
 
 | Per feed | Meaning |
@@ -58,7 +59,7 @@ Configured in `config.json` (see `config.example.json`):
 | `name` | Optional output file name (`something.feed.xml`); needed only if two feeds would get the same automatic name |
 | `drop_unhydrated` | `true` (default): an entry that is not hydrated stays **out of the republished feed**: text posts, PDFs, skipped hosts, pages that yield too little text, entries given up on after three failed tries, and entries still waiting for their turn. The feed then contains only entries with their full text. `false` publishes them as the origin feed has them |
 | `summary` | What happens to the entry's own summary (Atom `<summary>`, RSS `<description>`). Many readers show *either* the summary *or* the content, so there are three cases, see below: `"remove"` (default), `"start"`, `"end"` |
-| `summary_label` | Label of the box a moved summary is shown in; default `"Summary"`, e.g. `"Кратко"`. `""` (empty) gives plain text without the box, which suits a description that is not a summary (hnrss: Article URL, Comments URL, points) |
+| `summary_label` | Label of the box a moved summary is shown in; default `"Summary"`. `""` (empty) gives plain text without the box, which suits a description that is not a summary (hnrss: Article URL, Comments URL, points) |
 | `format` | `"original"` (default) publishes the feed in the format it came in. `"atom"` reformats an RSS 2.0 feed as Atom 1.0 (an Atom feed is left as it is), see below |
 | `remove` | A list of cosmetic filters in uBlock Origin syntax that cut blocks out of the page *before* the text is extracted, e.g. `".article__block:has(div[data-type*=\"banner\"])"`. See "Cutting blocks out" below |
 | `filters_file` | A text file (or a list of them) with such filters, one per line, as in a uBlock list. Relative paths are relative to the config file |
@@ -234,7 +235,7 @@ styles, forms and `javascript:` links are dropped and iframes become plain links
 
 ## Subscription processor
 
-Needs `SUBSCRIPTION_ADDRESS` and `IMAP_PASSWORD` in `.env` (see `env.example`). Sign up for newsletters with the plus
+Set `subscriptions.address` and `subscriptions.imap.password` in `config.toml`. Sign up for newsletters with the plus
 address yourself; confirmation emails of double opt-in arrive as ordinary items.
 
 - **Address filter:** headers of recent messages are fetched and the target address must match exactly (case-insensitive)
@@ -244,13 +245,12 @@ address yourself; confirmation emails of double opt-in arrive as ordinary items.
   ranges, so the original wording and images are never rewritten. Boilerplate is left out.
 - **Topic filters:** right after the split, before anything is summarised, a topic is dropped if its title contains a
   skip keyword (`SUBSCRIPTION_SKIP_KEYWORDS`, comma-separated, and/or `SUBSCRIPTION_SKIP_KEYWORDS_FILE`, one per line,
-  `!` for comments) or if its text is shorter than `SUBSCRIPTION_MIN_TOPIC_CHARS` characters (default `0`, off; the text of the post without
-  images, as it would be read). No AI call is spent
+  `!` for comments) or if it is shorter than `SUBSCRIPTION_MIN_TOPIC_WORDS` words (default `0`, off). No AI call is spent
   on a dropped topic. Matching ignores case and looks at whole words: `sponsor` does not match "Sponsored", `sponsor*`
-  does (a `*` stands for any letters, so `реклам*` catches реклама, рекламный, рекламации), `*sponsor*` matches anywhere
-  inside a word, `read more` is a phrase, and `/^re:/i` is a regular expression (put it in the file if it needs a
-  comma). Kept topics keep their position in the email in their id, and an email whose topics are all dropped still
-  counts as processed. If the AI answer cannot be read, the whole email is one topic titled with its subject, which the
+  does (a `*` stands for any letters), `*sponsor*` matches anywhere inside a word, `read more` is a phrase, 
+  and `/^re:/i` is a regular expression (put it in the file if it needs a comma).
+  Kept topics keep their position in the email in their id, and an email whose topics are all dropped still counts
+  as processed. If the AI answer cannot be read, the whole email is one topic titled with its subject, which the
   filters see like any other title.
 - **Summaries:** a second call per topic sends the full text and asks for a faithful retelling, not a description.
 
@@ -274,7 +274,7 @@ address yourself; confirmation emails of double opt-in arrive as ordinary items.
 ### AI providers
 
 `AI_PROVIDER` = `anthropic`, `gemini`, `openai`, `deepseek`, `local` or `rapid-mlx`; if unset, the first key found is
-used. Keys and model overrides are in `env.example`. The hydrator does not use AI at all.
+used. Keys and model overrides live in the matching `[ai.*]` tables in `config.toml`. The hydrator does not use AI at all.
 
 `local` and `rapid-mlx` share **one endpoint**, `LOCAL_BASE_URL` (default `http://127.0.0.1:8000/v1`), so a model server
 that something else already runs there is reused. `local` never starts anything; `rapid-mlx` additionally runs
@@ -294,65 +294,40 @@ load the model, try `RAPID_MLX_ARGS="--no-mllm"`.
 
 ## Settings
 
-Everything is an environment variable or a line in `.env` (real environment wins); `env.example` lists them all.
+All settings live in one `config.toml`, copied from `config.example.toml`. Python 3.12+'s standard-library `tomllib` reads it. TOML comments and native arrays are supported; secrets should be protected with `chmod 600 config.toml`.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RSSENHANCER_PORT` | `8787` (or `$PORT`) | Web server port |
-| `RSSENHANCER_HOST` | `127.0.0.1` | Bind address; `0.0.0.0` when hosting |
-| `RSSENHANCER_PUBLIC_URL` | `http://127.0.0.1:PORT` | Public base URL used inside feeds |
-| `RSSENHANCER_DIR` | `~/Library/Application Support/RssEnhancer` | Feeds and state |
-| `RSSENHANCER_CONFIG` | `config.json` here | Hydrator config file |
-| `RSSENHANCER_CONFIG_JSON` | empty | The hydrator config as JSON in the variable itself (it may live in `.env`, see below); wins over the file |
-| `RSSENHANCER_ENV` | `.env` here | Alternative env file |
-| `RSSENHANCER_ACCESS_LOG` | `1` | Log each request with its User-Agent |
-| `SUBSCRIPTION_ADDRESS`, `IMAP_PASSWORD` | | Mail source (required for it) |
-| `IMAP_HOST`, `IMAP_USER`, `IMAP_FOLDER` | `imap.gmail.com`, address without `+tag`, `INBOX` | Mailbox |
-| `SUBSCRIPTION_POLL_MINUTES`, `SUBSCRIPTION_LOOKBACK_DAYS` | `15`, `7` | Mail schedule |
-| `SUBSCRIPTION_FEED_TITLE` | `Mail: ` + masked address | Title of the mail feed |
-| `SUBSCRIPTION_FEED_FORMAT` | `rss` | `atom` publishes the mail feed as Atom |
-| `SUBSCRIPTION_SKIP_KEYWORDS`, `SUBSCRIPTION_SKIP_KEYWORDS_FILE` | empty | Drop topics whose title contains one of these words |
-| `SUBSCRIPTION_MIN_TOPIC_CHARS` | `0` (off) | Drop posts whose text is shorter than this many characters |
-| `SUMMARY_LIMIT_WORDS`, `SUMMARY_LONG_WORDS`, `SUMMARY_FACTOR`, `SUMMARY_RATIO` | `500`, `1000`, `0.5`, off | Summary sizing |
+- `[app]`: `port`, `host`, `public_url`, `data_dir`, `access_log`.
+- `[subscriptions]`: mailbox address, feed title/format, polling, topic filters and `[[subscriptions.skip_keywords]]` is not used: `skip_keywords` is a plain string array.
+- `[subscriptions.imap]`: `host`, `user`, `password`, `folder`.
+- `[subscriptions.summary]`: `limit_words`, `long_words`, `factor`, `ratio`.
+- `[ai]` and `[ai.anthropic]`, `[ai.gemini]`, `[ai.openai]`, `[ai.deepseek]`, `[ai.local]`, `[ai.rapid_mlx]`: provider selection and credentials/model options.
+- `[hydrator]`: global feed polling, extraction and filter settings.
+- `[[hydrator.feeds]]`: one table per RSS/Atom source. Repeat it to add feeds.
 
-Data layout in `RSSENHANCER_DIR`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`,
-`rapid-mlx.log`. Only `feeds/` is ever served.
+Arrays are native TOML arrays, for example:
+
+```toml
+[subscriptions]
+skip_keywords = ["sponsor*", "advertisement"]
+
+[hydrator]
+remove = ["##.cookie-banner", "##.advertisement"]
+filters_file = ["filters/common.txt"]
+
+[[hydrator.feeds]]
+url = "https://hnrss.org/frontpage"
+selector = "auto"
+skip_hosts = ["youtube.com", "vimeo.com"]
+remove = ["##.newsletter-popup"]
+```
+
+The complete list of options, defaults and comments is in `config.example.toml`. The hydrator does not use AI.
 
 ## Changing settings while it runs
 
-The program reads its settings again while it runs, so there is no need to restart it by hand:
+The process watches `config.toml`. After an edit it checks the new configuration in a separate process (`--check`). If valid, running passes finish and the process replaces itself in place; if invalid, the error is logged and the old process keeps running. Filter files named by `filters_file` are read again on the next hydrator pass.
 
-| What you edit | What happens |
-|---|---|
-| `config.json` and the filter files it names (`filters_file`) | read again before every pass; an edit starts a pass within a few seconds. A config that cannot be used (bad JSON, unknown option, missing file) is reported in the log and the previous one stays, until the next edit |
-| `SUBSCRIPTION_SKIP_KEYWORDS_FILE` | read again before every pass |
-| `.env` | the new settings are first checked in a separate process (`--check`). If they are usable, the passes that are running finish, then the program replaces itself in place (same process id, so launchd does not notice) and starts with the new settings; the web server is down for a moment. If they are not usable, the log says what is wrong and the program keeps running with the old settings until the next edit |
-| `config.json` created later | when only the mail source is running, creating the file starts the hydrator (this is also a restart) |
-
-`poll_minutes` and the other global options take effect with the next pass. Variables set in the real environment (a
-shell, the launchd plist) are not reloaded, and they win over `.env`, so a value set there cannot be changed from `.env`.
-
-### Everything in `.env`: the config as JSON in a variable
-
-If you would rather have one file to edit, the hydrator config can live in `.env` as the value of
-`RSSENHANCER_CONFIG_JSON`. A value in quotes may run over several lines, so the JSON can keep its layout:
-
-```
-RSSENHANCER_CONFIG_JSON='{
-  "poll_minutes": 30,
-  "remove": ["##.cookie-banner"],
-  "feeds": [
-    {"url": "https://hnrss.org/frontpage", "selector": "auto", "summary": "start", "summary_label": ""}
-  ]
-}'
-```
-
-- Use single quotes around the value so the double quotes of the JSON need no escaping. An apostrophe inside is fine
-  (`:has-text(Don't miss)`) unless a line of the JSON ends with one.
-- When the variable is set, `config.json` is ignored. Relative paths (`filters_file`) are relative to the project folder.
-- Comments are not possible in JSON; keys that start with `_` are ignored, so `"_comment": "..."` works.
-- A change of `.env` restarts the program (see above), while a change of `config.json` is applied in place. For frequent
-  edits of the feed list the file is therefore the lighter way.
+Data layout in `app.data_dir`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`, `rapid-mlx.log`. Only `feeds/` is served.
 
 ## Run in the background
 
@@ -362,7 +337,7 @@ RSSENHANCER_CONFIG_JSON='{
 tail -f ~/Library/Logs/RssEnhancer.log
 ```
 
-Settings are read from `.env` and `config.json` next to the code, so no secrets end up in the plist.
+Settings are read from `config.toml` next to the code, so no secrets end up in the plist.
 
 ## Hosting it elsewhere
 
@@ -373,26 +348,18 @@ outgoing HTTPS. On a VPS or PaaS set `RSSENHANCER_HOST=0.0.0.0`, `RSSENHANCER_PU
 authentication: anyone who can reach the URL can read the full text of your feeds, so put a reverse proxy, a secret
 path or a private network in front.
 
-## Upgrading from mailrss
-
-The project was renamed. The old variable names still work (`MAILRSS_ADDRESS`, `MAILRSS_PORT`, `POLL_MINUTES`, ...),
-the new ones win when both are set. On first start the old data folder `~/Library/Application Support/mailrss` is moved to
-`RssEnhancer` and its `state.json`/`feed.xml` are adopted, so nothing is processed twice. The mail feed moved from
-`/feed.xml` to `/mail.feed.xml`; the old address keeps working. `install-launchd.sh` replaces the old
-`com.user.mailrss` agent.
-
 ## Troubleshooting
 
 `./run.sh --once` prints what each source did.
 
 | You see | Likely cause |
 |---|---|
-| `subscriptions: not configured` / `hydrator: not configured` | Set `SUBSCRIPTION_ADDRESS`, or create `config.json` |
+| `subscriptions: not configured` / `hydrator: not configured` | Set `subscriptions.address`, or add a `[[hydrator.feeds]]` entry in `config.toml` |
 | `selector 'div.x' matched nothing` | The class is not on the article page; check it in the browser's inspector. Looked up in the HTML the server sends, not the one JavaScript builds later |
 | `only N words extracted, probably not an article` / `no article text found` | `"auto"` found nothing article-like (landing page, paywall, JavaScript app). The entry is left out of the feed (it keeps its original content with `drop_unhydrated: false`) |
 | `refusing to fetch ...: ... is not a public address` | The link points into a private network; this is the safety guard |
 | `HTTP 403` for articles | The site blocks scripts; there is no workaround here |
-| `config.json: feed #N: "remove" #M ...: ...` | A filter could not be read or uses something that is not supported (see the list under "Cutting blocks out"); the line and the position are named |
+| `config.toml: feed #N: "remove" #M ...: ...` | A filter could not be read or uses something that is not supported (see the list under "Cutting blocks out"); the line and the position are named |
 | `unsupported feed format` | Only Atom and RSS 2.0 are handled (not RSS 1.0/RDF) |
 | `poll failed: ... AUTHENTICATIONFAILED` | Wrong `IMAP_USER`/`IMAP_PASSWORD`; Gmail needs an app password and IMAP enabled |
 | `0 message(s) since ...` | Mail older than `SUBSCRIPTION_LOOKBACK_DAYS` or not in `IMAP_FOLDER` (Gmail: `"[Gmail]/All Mail"`) |

@@ -1,15 +1,15 @@
 """RssEnhancer entry point.
 
 Runs the publisher (a small web server) and, in parallel, whichever sources are configured:
-  subscriptions  mail to SUBSCRIPTION_ADDRESS  -> AI-split RSS items            (.env)
-  hydrator       third-party feeds (config.json or RSSENHANCER_CONFIG_JSON) -> the same feeds with full text
+  subscriptions  mail to SUBSCRIPTION_ADDRESS  -> AI-split RSS items            (config.toml)
+  hydrator       third-party feeds (config.toml) -> the same feeds with full text
 The sources never talk to each other; each has its own thread, schedule and state.
 
 Settings are read again while the program runs:
-  config.json            (and the filter files it names) is re-read before every pass, and a change starts a pass
+  config.toml             is checked for changes; a valid edit restarts the process
                          within seconds. A config that cannot be used is reported and the previous one stays.
-  the keyword list       SUBSCRIPTION_SKIP_KEYWORDS_FILE is re-read before every pass.
-  .env                   a change is checked first (--check, in a separate process); if the new settings are usable
+  the keyword list file is re-read before every pass.
+  config.toml             a change is checked first (--check, in a separate process); if the new settings are usable
                          the program finishes its running passes and restarts itself in place, otherwise it says
                          what is wrong and keeps running with the old settings.
 
@@ -31,8 +31,8 @@ from . import ai, common, feed_hydrator, publisher, subscription_processor
 from .common import log
 
 COMPONENTS = {
-    "subscriptions": (subscription_processor, "set SUBSCRIPTION_ADDRESS (and IMAP_PASSWORD) in .env"),
-    "hydrator": (feed_hydrator, "create config.json with a \"feeds\" list (see config.example.json)"),
+    "subscriptions": (subscription_processor, "set subscriptions.address and subscriptions.imap.password in config.toml"),
+    "hydrator": (feed_hydrator, "add at least one [[hydrator.feeds]] entry to config.toml"),
 }
 WATCH_SECONDS = 3
 
@@ -59,7 +59,7 @@ def _run(name, worker, once, stop):
 def _restart_if_usable(stop, threads, only):
     """The settings file changed: check the new settings in a separate process and, only if they are usable, finish
     the running passes and replace this process with a fresh one. Returns only when the new settings are not usable."""
-    clean = {k: v for k, v in os.environ.items() if k not in common.DOTENV_KEYS}  # without the old .env values
+    clean = os.environ.copy()
     cmd = [sys.executable, "-m", "rssenhancer", "--check"] + [x for o in only for x in ("--only", o)]
     try:
         r = subprocess.run(cmd, cwd=str(common.ROOT), env=clean, capture_output=True, text=True, timeout=180)
@@ -75,16 +75,12 @@ def _restart_if_usable(stop, threads, only):
     for t in threads:
         t.join()
     ai.stop_rapid_mlx()
-    for k in list(common.DOTENV_KEYS):
-        os.environ.pop(k, None)  # so the fresh process reads the new .env instead of inheriting the old values
     sys.stderr.flush()
     os.execv(sys.executable, [sys.executable, "-m", "rssenhancer"] + sys.argv[1:])
 
 
 def _watch(stop, threads, only, hydrator_running):
-    paths = [common.env_file_path()]
-    if not hydrator_running:
-        paths.append(feed_hydrator.config_path())  # creating config.json later starts the hydrator
+    paths = [common.config.CONFIG_PATH]
     sig = lambda: tuple(common.file_signature(p) for p in paths)
     last = sig()
     while not stop.wait(WATCH_SECONDS):

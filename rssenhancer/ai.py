@@ -1,28 +1,13 @@
-"""AI providers for the subscription processor.
+"""AI providers configured in config.toml.
 
-AI_PROVIDER = anthropic | gemini | openai | deepseek | local | rapid-mlx
-(auto-detected from whichever key is set if omitted; falls back to rapid-mlx if no key is set and the
-rapid-mlx CLI is installed)
-  anthropic: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL
-  gemini:    GEMINI_API_KEY (or GOOGLE_API_KEY), GEMINI_MODEL
-  openai:    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
-  deepseek:  DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
-  local / rapid-mlx share ONE endpoint, so a server that another agent already runs there is reused:
-     LOCAL_BASE_URL (http://127.0.0.1:8000/v1)  LOCAL_MODEL (mlx-community/Qwen3.6-35B-A3B-5bit)
-     LOCAL_API_KEY  LOCAL_EXTRA_BODY (JSON merged into each request)
-     LOCAL_ON_MISMATCH=use|fail  the endpoint serves a different model: use it (default, logged) or fail
-     local:     never starts anything; fails (and retries next poll) if nothing answers
-     rapid-mlx: also starts `rapid-mlx serve LOCAL_MODEL` at that address when nothing answers, only when an
-                email needs processing, and stops it after the poll. A server it did not start is never stopped.
-                RAPID_MLX_BIN  RAPID_MLX_ARGS (extra serve flags)  RAPID_MLX_STARTUP_SECONDS (900)
-                RAPID_MLX_STOP_AFTER_POLL=0 keeps the server running between polls
-
-Every provider is a function call(system, prompt, json_mode=True, max_tokens=4096) -> str.
+Select ai.provider = "anthropic" | "gemini" | "openai" | "deepseek" | "local" | "rapid-mlx".
+Credentials and model overrides live in [ai.anthropic], [ai.gemini], [ai.openai],
+[ai.deepseek], and [ai.local]. The local and rapid-mlx providers share one endpoint;
+rapid-mlx starts a local server only when needed and stops it after the poll.
 """
 import json
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -54,7 +39,7 @@ def call_anthropic(system, prompt, json_mode=True, max_tokens=4096):
 
 
 def call_gemini(system, prompt, json_mode=True, max_tokens=4096):
-    key = env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")
+    key = env("GEMINI_API_KEY")
     model = env("GEMINI_MODEL", "gemini-2.5-flash")
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
@@ -107,7 +92,7 @@ LOCAL_MODEL = env("LOCAL_MODEL", "mlx-community/Qwen3.6-35B-A3B-5bit")
 _local_url = urlparse(LOCAL_URL)
 LOCAL_HOST = _local_url.hostname or "127.0.0.1"
 LOCAL_PORT = _local_url.port or (443 if _local_url.scheme == "https" else 80)
-RAPID_STOP_AFTER_POLL = env("RAPID_MLX_STOP_AFTER_POLL", "1") == "1"
+RAPID_STOP_AFTER_POLL = bool(env("RAPID_MLX_STOP_AFTER_POLL", True))
 RAPID_STARTUP_SECONDS = int(env("RAPID_MLX_STARTUP_SECONDS", "900"))  # first run downloads the model
 _rapid_proc = None
 _rapid_failed = False
@@ -204,7 +189,7 @@ def ensure_local(autostart):
         if not binary:
             raise RuntimeError("rapid-mlx not found (brew install rapid-mlx, or set RAPID_MLX_BIN)")
         cmd = [binary, "serve", LOCAL_MODEL, "--host", LOCAL_HOST, "--port", str(LOCAL_PORT)]
-        cmd += shlex.split(env("RAPID_MLX_ARGS", ""))
+        cmd += list(env("RAPID_MLX_ARGS", []) or [])
         log("starting:", " ".join(cmd))
         logf = open(common.DATA / "rapid-mlx.log", "ab")
         _rapid_proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
@@ -250,7 +235,7 @@ def make_local(autostart):
             "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         }
-        body.update(json.loads(env("LOCAL_EXTRA_BODY", "{}")))
+        body.update(env("LOCAL_EXTRA_BODY", {}) or {})
         r = post_json(LOCAL_URL + "/chat/completions", headers, body, timeout=900)
         return r["choices"][0]["message"].get("content") or ""
 
@@ -262,7 +247,7 @@ def get_provider():
     if not name:
         if env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN"):
             name = "anthropic"
-        elif env("GEMINI_API_KEY") or env("GOOGLE_API_KEY"):
+        elif env("GEMINI_API_KEY"):
             name = "gemini"
         elif env("OPENAI_API_KEY"):
             name = "openai"
@@ -282,7 +267,7 @@ def get_provider():
             sys.exit("ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is not set")
         return name, call_anthropic
     if name == "gemini":
-        if not (env("GEMINI_API_KEY") or env("GOOGLE_API_KEY")):
+        if not env("GEMINI_API_KEY"):
             sys.exit("GEMINI_API_KEY is not set")
         return name, call_gemini
     if name in COMPAT:

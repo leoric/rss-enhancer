@@ -1,29 +1,10 @@
 """Subscription processor: turns a plus-addressed mailbox into an AI-split RSS feed.
 
-  1. Poll an IMAP mailbox for mail addressed to EXACTLY foo+bar@baz.com
-     (foo@baz.com and foo+other@baz.com are ignored).
-  2. Flatten each email into numbered blocks (headings, paragraphs, images).
-  3. Ask an AI provider to group the blocks into topics, then (second pass, full text) to write a
-     faithful retelling of each topic of at least SUMMARY_LIMIT_WORDS; shorter topics get none.
-  4. Hand each topic to the publisher as its own RSS item (summary first, then full text + images).
+Settings live in config.toml under [subscriptions], [subscriptions.imap],
+[subscriptions.summary], and the [ai.*] provider tables.
 
-It knows nothing about other feeds; the feed hydrator is its parallel sibling and they only share the publisher.
-
-Settings (environment or .env):
-  SUBSCRIPTION_ADDRESS (required, e.g. foo+bar@baz.com)  IMAP_PASSWORD (required, an app password)
-  IMAP_HOST (imap.gmail.com)  IMAP_USER (address without +tag)  IMAP_FOLDER (INBOX)
-  SUBSCRIPTION_POLL_MINUTES (15)  SUBSCRIPTION_LOOKBACK_DAYS (7)  SUBSCRIPTION_FEED_TITLE
-  SUBSCRIPTION_FEED_FORMAT (rss | atom)
-Topic filters, applied right after the email is split and before any summary is considered:
-  SUBSCRIPTION_SKIP_KEYWORDS      comma-separated words that drop a topic when its title contains one
-  SUBSCRIPTION_SKIP_KEYWORDS_FILE the same, one per line (`!` starts a comment)
-  SUBSCRIPTION_MIN_TOPIC_CHARS    topics shorter than this many characters are dropped (0 = off)
-Summaries (a retelling, not a gist), sized by two limits:
-  SUMMARY_LIMIT_WORDS (500)   topics shorter than this get no summary; topics up to the second
-                              limit get a summary of this size
-  SUMMARY_LONG_WORDS (1000)   topics longer than this get LIMIT * SUMMARY_FACTOR words (0.5 -> 250)
-  SUMMARY_RATIO (off)         optional: also keep the summary under RATIO * topic length, e.g. 0.5
-The AI provider is configured in ai.py's docstring.
+The processor polls mail addressed to the exact plus address, splits newsletters into
+topics, filters topics before summarisation, and publishes each retained topic as an RSS item.
 """
 import datetime as dt
 import email
@@ -356,7 +337,7 @@ def item_author(from_header, subject):
 def compile_keywords(items):
     """Title keywords -> [(keyword as written, compiled regex)]. Matching ignores case.
       sponsor       a whole word (not "sponsorship")
-      реклам*       a word that starts with it (реклама, рекламный, ...); * may also stand in the middle or at the start
+      ad*           a word that starts with it (advertisement, ads, ...); * may also stand in the middle or at the start
       read more     a phrase, with any spacing between its words
       /regex/i      a regular expression searched in the title, with flags i, s, m"""
     rules = []
@@ -380,7 +361,9 @@ def compile_keywords(items):
 
 def load_skip_rules():
     """Title keywords from SUBSCRIPTION_SKIP_KEYWORDS (comma-separated) and SUBSCRIPTION_SKIP_KEYWORDS_FILE (one per line)."""
-    items = (env("SUBSCRIPTION_SKIP_KEYWORDS") or "").split(",")
+    items = env("SUBSCRIPTION_SKIP_KEYWORDS", []) or []
+    if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+        raise SystemExit("subscriptions.skip_keywords must be an array of strings")
     name = env("SUBSCRIPTION_SKIP_KEYWORDS_FILE")
     if name:
         path = Path(name).expanduser()
@@ -582,8 +565,6 @@ def validate():
         raise SystemExit("Set IMAP_PASSWORD (use an app password)")
     if FEED_FORMAT not in ("rss", "atom"):
         raise SystemExit("SUBSCRIPTION_FEED_FORMAT must be rss or atom")
-    if env("SUBSCRIPTION_MIN_TOPIC_WORDS"):
-        raise SystemExit("SUBSCRIPTION_MIN_TOPIC_WORDS was replaced by SUBSCRIPTION_MIN_TOPIC_CHARS (a number of characters)")
     load_skip_rules()
     get_provider()
 

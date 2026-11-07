@@ -1,12 +1,10 @@
-"""Shared plumbing: configuration (.env + environment), logging, HTTP helpers and the data directory.
+"""Shared plumbing: TOML configuration, logging, HTTP helpers and the data directory.
 
 Nothing in here knows about e-mail or about feeds; the publisher, the subscription processor and the
 feed hydrator all build on it.
 """
 import ipaddress
 import json
-import os
-import shutil
 import socket
 import sys
 import threading
@@ -15,76 +13,16 @@ import urllib.error
 import urllib.request
 import zlib
 from pathlib import Path
+
+from . import config
 from typing import NamedTuple
 from urllib.parse import urljoin, urlparse
 
-ROOT = Path(__file__).resolve().parent.parent  # project root: .env and config.json live here
+ROOT = Path(__file__).resolve().parent.parent  # project root: config.toml lives here
 UA = "Mozilla/5.0 (compatible; RssEnhancer/1.0)"
 
-# Names used before the project was called RssEnhancer still work; the new name wins when both are set.
-_LEGACY = {
-    "RSSENHANCER_PORT": "MAILRSS_PORT",
-    "RSSENHANCER_HOST": "MAILRSS_HOST",
-    "RSSENHANCER_PUBLIC_URL": "MAILRSS_PUBLIC_URL",
-    "RSSENHANCER_DIR": "MAILRSS_DIR",
-    "RSSENHANCER_ENV": "MAILRSS_ENV",
-    "RSSENHANCER_ACCESS_LOG": "MAILRSS_ACCESS_LOG",
-    "SUBSCRIPTION_ADDRESS": "MAILRSS_ADDRESS",
-    "SUBSCRIPTION_FEED_TITLE": "MAILRSS_FEED_TITLE",
-    "SUBSCRIPTION_POLL_MINUTES": "POLL_MINUTES",
-    "SUBSCRIPTION_LOOKBACK_DAYS": "LOOKBACK_DAYS",
-}
-
-
-DOTENV_KEYS = set()  # variables that came from .env, not from the real environment (cleared before a restart)
-
-
-def env_file_path():
-    explicit = os.environ.get("RSSENHANCER_ENV") or os.environ.get("MAILRSS_ENV")
-    return Path(explicit) if explicit else ROOT / ".env"
-
-
-def load_dotenv():
-    """Load KEY=VALUE lines from .env in the project root (or the file named by RSSENHANCER_ENV).
-    Variables already present in the real environment win. A value in quotes may run over several lines,
-    which is how a whole JSON config fits into one variable:
-        RSSENHANCER_CONFIG_JSON='{
-          "feeds": [...]
-        }'"""
-    path = env_file_path()
-    if not path.is_file():
-        return
-    lines = path.read_text(encoding="utf-8").splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        i += 1
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, val = line.split("=", 1)
-        key, val = key.strip(), val.strip()
-        if key.startswith("export "):
-            key = key[7:].strip()
-        if val[:1] in ("'", '"') and not (len(val) >= 2 and val[-1] == val[0]):
-            quote, parts = val[0], [val[1:]]  # the closing quote is the last character of some later line
-            while i < len(lines):
-                nxt = lines[i]
-                i += 1
-                if nxt.rstrip().endswith(quote):
-                    parts.append(nxt.rstrip()[:-1])
-                    break
-                parts.append(nxt)
-            val = "\n".join(parts)
-        elif len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-            val = val[1:-1]
-        elif " #" in val:
-            val = val.split(" #")[0].rstrip()
-        if key not in os.environ:
-            os.environ[key] = val
-            DOTENV_KEYS.add(key)
-
-
-load_dotenv()
+def env(name, default=None):
+    return config.setting(name, default)
 
 
 def file_signature(path):
@@ -103,17 +41,13 @@ class Worker(NamedTuple):
     changed: object = None  # callable -> True when a file this source reads has changed: run the next pass now
 
 
-def env(name, default=None):
-    v = os.environ.get(name, "").strip()
-    if not v and name in _LEGACY:
-        v = os.environ.get(_LEGACY[name], "").strip()
-    return v or default
 
 
-PORT = int(env("RSSENHANCER_PORT") or env("PORT") or "8787")
+PORT = int(env("RSSENHANCER_PORT", 8787))
 HOST = env("RSSENHANCER_HOST", "127.0.0.1")
 BASE = (env("RSSENHANCER_PUBLIC_URL") or "http://127.0.0.1:%d" % PORT).rstrip("/")
 DATA = Path(env("RSSENHANCER_DIR", "~/Library/Application Support/RssEnhancer")).expanduser()
+
 
 
 def log(*a):
@@ -123,17 +57,9 @@ def log(*a):
 
 
 def prepare_data_dir():
-    """Create the data directory layout, adopting data left by the pre-rename mailrss version."""
-    legacy = Path("~/Library/Application Support/mailrss").expanduser()
-    if not env("RSSENHANCER_DIR") and not DATA.exists() and legacy.exists():
-        DATA.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(DATA))
-        log("moved the old data directory %s to %s" % (legacy, DATA))
+    """Create the data directory layout."""
     for sub in ("feeds", "state", "state/hydrator"):
         (DATA / sub).mkdir(parents=True, exist_ok=True)
-    for old, new in (("state.json", "state/subscriptions.json"), ("feed.xml", "feeds/mail.feed.xml")):
-        if (DATA / old).exists() and not (DATA / new).exists():
-            (DATA / old).replace(DATA / new)
 
 
 def atomic_write(path, data):

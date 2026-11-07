@@ -1,5 +1,4 @@
-.env
-config.json
+config.toml
 __pycache__/
 *.pyc
 *.log

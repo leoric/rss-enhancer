@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
 # Install RssEnhancer as a per-user launchd agent (starts at login, restarts on crash).
-# Secrets stay in .env; nothing sensitive is written to the plist.
+# Secrets stay in config.toml; nothing sensitive is written to the plist.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 LABEL="com.user.rssenhancer"
-OLD_LABEL="com.user.mailrss"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/RssEnhancer.log"
 PYTHON="${PYTHON:-$(command -v python3)}"
 
-[ -f "$DIR/.env" ] || [ -f "$DIR/config.json" ] || {
-  echo "Nothing to run: create $DIR/.env (copy env.example) and/or $DIR/config.json (copy config.example.json)"; exit 1; }
-[ ! -f "$DIR/.env" ] || chmod 600 "$DIR/.env"
+[ -f "$DIR/config.toml" ] || {
+  echo "Nothing to run: create $DIR/config.toml (copy config.example.toml)"; exit 1; }
+chmod 600 "$DIR/config.toml"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-
-# the pre-rename agent would fight over the same mailbox and port
-if [ -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist" ]; then
-  launchctl bootout "gui/$(id -u)/$OLD_LABEL" 2>/dev/null || true
-  rm -f "$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
-  echo "Removed the old $OLD_LABEL agent."
-fi
 
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
