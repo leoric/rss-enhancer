@@ -87,6 +87,13 @@ remove = [
 filters_file = [
     # "filters/common.txt",
 ]
+# Leave out entries whose author matches, without fetching them (same rules as the mail source's skip_keywords:
+# whole words, * for any letters, /regex/i). Applies to every feed; a feed can add its own.
+skip_authors = [
+    # "Some Author",
+    # "noreply@example.com",
+]
+skip_authors_file = ""             # Optional UTF-8 file, one rule per line; ! starts a comment.
 
 # Each feed is a separate TOML array-of-tables entry.
 [[hydrator.feeds]]
@@ -100,6 +107,8 @@ summary_label = ""
 # link_from = "link"               # "link" or "id".
 # min_words = 60
 # skip_hosts = ["youtube.com", "vimeo.com"]
+# skip_authors = ["Some Author"]   # added to the global skip_authors
+# skip_authors_file = "filters/authors.txt"
 # remove = ["##.cookie-banner"]
 # filters_file = ["filters/hackernews.txt"]
 

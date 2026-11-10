@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 from . import atomfeed, common, publisher
 from .ai import extract_json, get_provider, rapid_poll_done
-from .common import Worker, atomic_write, env, error, log, stats, warn
+from .common import Worker, atomic_write, compile_keywords, env, error, log, stats, warn
 
 ADDRESS = (env("SUBSCRIPTION_ADDRESS") or "").lower()
 IMAP_HOST = env("IMAP_HOST", "imap.gmail.com")
@@ -337,31 +337,6 @@ def item_author(from_header, subject):
     if tag and tag.lower() != base.lower():
         return "%s : %s" % (base, tag) if base else tag
     return base
-
-
-def compile_keywords(items):
-    """Title keywords -> [(keyword as written, compiled regex)]. Matching ignores case.
-      sponsor       a whole word (not "sponsorship")
-      ad*           a word that starts with it (advertisement, ads, ...); * may also stand in the middle or at the start
-      read more     a phrase, with any spacing between its words
-      /regex/i      a regular expression searched in the title, with flags i, s, m"""
-    rules = []
-    for item in items:
-        item = item.strip()
-        if not item:
-            continue
-        m = re.fullmatch(r"/(.+)/([a-z]*)", item, re.S)
-        try:
-            if m:
-                flags = (re.I if "i" in m.group(2) else 0) | (re.S if "s" in m.group(2) else 0) | (re.M if "m" in m.group(2) else 0)
-                rx = re.compile(m.group(1), flags)
-            else:
-                body = re.escape(item).replace(r"\*", r"\w*").replace(r"\ ", r"\s+")
-                rx = re.compile(r"(?<!\w)%s(?!\w)" % body, re.I)
-        except re.error as e:
-            raise ValueError("bad title keyword %r: %s" % (item, e))
-        rules.append((item, rx))
-    return rules
 
 
 def load_skip_rules():

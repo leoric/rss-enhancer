@@ -65,6 +65,8 @@ summary_label = ""
 | `filters_file` | A text file (or a list of them) with such filters, one per line, as in a uBlock list. Relative paths are relative to the config file |
 | `min_words` | A page that yields fewer words counts as a failed extraction. Default `0`, or `60` with `"auto"` |
 | `skip_hosts` | Hosts whose links are never fetched. Default `[]`, or a list of video/social sites with `"auto"` |
+| `skip_authors` | Entries whose author matches one of these rules are left out of the republished feed and never fetched (whatever `drop_unhydrated` says). Atom `<author>` (name and email) and RSS `<author>` / `<dc:creator>` are checked. Rules work as the mail source's `skip_keywords`: case-insensitive whole words, `*` stands for any letters, `read more` is a phrase, `/regex/i` is a regular expression. Added to the global `skip_authors` |
+| `skip_authors_file` | A text file (or a list of them) with such rules, one per line, `!` starts a comment. Relative paths are relative to the config file |
 
 | Global (all optional) | Default | Meaning |
 |---|---|---|
@@ -73,6 +75,7 @@ summary_label = ""
 | `max_items_per_run` | `30` | At most this many new articles are fetched per feed per pass (the rest next time) |
 | `timeout` | `30` | Seconds per HTTP request |
 | `allow_private_hosts` | `false` | Allow article links that point at loopback/private addresses (only useful for testing, see below) |
+| `skip_authors`, `skip_authors_file` | none | As per feed, but for every feed |
 
 **Output name:** `<domain>-<path>.feed.xml`, with `/` in the path turned into `-` and a trailing `.xml`/`.rss`/`.atom`
 dropped, the query string ignored: `hnrss.org-frontpage.feed.xml`.
@@ -224,7 +227,7 @@ For a feed like `hnrss.org` every entry links to a different site, so there is n
    `max_items_per_run`), are left out of the republished feed unless `drop_unhydrated` is `false`; an entry that failed
    for good is therefore gone for good, and so is every entry of a feed whose selector stopped matching: watch the log.
 5. Changing a feed's `selector`, `link_from`, `min_words`, `skip_hosts` or its filters (`remove`, `filters_file`) discards its cache and hydrates everything
-   again; changing `summary`, `summary_label` or `drop_unhydrated` only rewrites the feed. The first start after an upgrade
+   again; changing `summary`, `summary_label`, `drop_unhydrated` or `skip_authors` only rewrites the feed. The first start after an upgrade
    rewrites every feed once.
 
 **Well-formed HTML for readers.** The extracted markup is rebuilt, not copied: unclosed `<p>`, `<li>`, `<td>` are
@@ -325,7 +328,7 @@ The complete list of options, defaults and comments is in `config.example.toml`.
 
 ## Changing settings while it runs
 
-The process watches `config.toml`. After an edit it checks the new configuration in a separate process (`--check`). If valid, running passes finish and the process replaces itself in place; if invalid, the error is logged and the old process keeps running. Filter files named by `filters_file` are read again on the next hydrator pass.
+The process watches `config.toml`. After an edit it checks the new configuration in a separate process (`--check`). If valid, running passes finish and the process replaces itself in place; if invalid, the error is logged and the old process keeps running. Filter files named by `filters_file` and `skip_authors_file` are read again on the next hydrator pass.
 
 Data layout in `app.data_dir`: `feeds/*.feed.xml` (served), `state/subscriptions.json`, `state/hydrator/*.json`. Only `feeds/` is served.
 

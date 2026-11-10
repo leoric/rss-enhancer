@@ -5,6 +5,7 @@ feed hydrator all build on it.
 """
 import ipaddress
 import json
+import re
 import socket
 import sys
 import threading
@@ -172,3 +173,28 @@ def post_json(url, headers, body, timeout=180):
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError("HTTP %d from %s: %s" % (e.code, url, e.read()[:500].decode("utf-8", "replace")))
+
+
+def compile_keywords(items):
+    """Keywords (of titles, authors) -> [(keyword as written, compiled regex)]. Matching ignores case.
+      sponsor       a whole word (not "sponsorship")
+      ad*           a word that starts with it (advertisement, ads, ...); * may also stand in the middle or at the start
+      read more     a phrase, with any spacing between its words
+      /regex/i      a regular expression searched in the title, with flags i, s, m"""
+    rules = []
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        m = re.fullmatch(r"/(.+)/([a-z]*)", item, re.S)
+        try:
+            if m:
+                flags = (re.I if "i" in m.group(2) else 0) | (re.S if "s" in m.group(2) else 0) | (re.M if "m" in m.group(2) else 0)
+                rx = re.compile(m.group(1), flags)
+            else:
+                body = re.escape(item).replace(r"\*", r"\w*").replace(r"\ ", r"\s+")
+                rx = re.compile(r"(?<!\w)%s(?!\w)" % body, re.I)
+        except re.error as e:
+            raise ValueError("bad keyword %r: %s" % (item, e))
+        rules.append((item, rx))
+    return rules

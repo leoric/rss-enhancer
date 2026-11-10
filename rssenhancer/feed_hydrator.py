@@ -26,7 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import atomfeed, common, publisher
-from .common import ROOT, Worker, atomic_write, env, error, http_get, log, warn
+from .common import ROOT, Worker, atomic_write, compile_keywords, env, error, http_get, log, warn
 from .cssfilter import FilterSet, SelectorError, parse_selector
 from .htmlutil import clean_fragment, decode_html, extract_article, extract_html
 
@@ -102,6 +102,7 @@ def load_config():
         if f.get("name") and not publisher.valid_name(f["name"]):
             raise SystemExit("%s (%s): \"name\" must look like something.feed.xml" % (where, f["url"]))
         f["_rules"], f["_rules_text"] = _build_rules(raw, f, base, where, sources)
+        f["_skip_authors"], f["_skip_authors_text"] = _build_author_rules(raw, f, base, where, sources)
         feeds.append(f)
     cfg["feeds"] = feeds
     cfg["_sources"] = sources
@@ -131,6 +132,31 @@ def _build_rules(raw, feed, base, where, sources):
         except SelectorError as e:
             raise SystemExit(str(e))
     return (rules if rules else None), rules.signature()
+
+
+def _build_author_rules(raw, feed, base, where, sources):
+    """The feed's skip_authors / skip_authors_file: the top-level ones first, then the feed's own. A file has one rule
+    per line and `!` starts a comment; the syntax of a rule is the one of the mail source's skip_keywords.
+    -> ([(rule as written, compiled regex)], the rules as text, for the cache signature)"""
+    items = []
+    for scope, label in ((raw, "top level"), (feed, "this feed")):
+        lines = scope.get("skip_authors") or []
+        files = scope.get("skip_authors_file") or []
+        lines, files = ([lines] if isinstance(lines, str) else lines), ([files] if isinstance(files, str) else files)
+        if not isinstance(lines, list) or not isinstance(files, list) or not all(isinstance(x, str) for x in lines + files):
+            raise SystemExit("%s: \"skip_authors\" and \"skip_authors_file\" (%s) must be a string or a list of strings" % (where, label))
+        items += lines
+        for name in files:
+            path = Path(name).expanduser()
+            path = path if path.is_absolute() else base / path
+            if not path.is_file():
+                raise SystemExit("%s: skip_authors_file %s not found" % (where, path))
+            items += [ln for ln in path.read_text(encoding="utf-8").splitlines() if not ln.lstrip().startswith("!")]
+            sources.append(path)
+    try:
+        return compile_keywords(items), json.dumps(items)
+    except ValueError as e:
+        raise SystemExit("%s: skip_authors: %s" % (where, e))
 
 
 def configured():
@@ -244,6 +270,30 @@ def entries_of(root, fmt):
     return channel.findall("item") if channel is not None else []
 
 
+def entry_authors(el, fmt):
+    """Everything an entry says about who wrote it, as strings to match skip_authors rules against.
+    Atom: each <author>'s name, email and \"name <email>\". RSS: <author> and <dc:creator> as written and as the bare name."""
+    out = []
+    if fmt == "atom":
+        for a in el.findall("{%s}author" % ATOM):
+            name, mail = _text(a.find("{%s}name" % ATOM)), _text(a.find("{%s}email" % ATOM))
+            out += [name, mail, ("%s <%s>" % (name, mail)) if name and mail else ""]
+    else:
+        for tag in ("author", "{%s}creator" % atomfeed.DC):
+            for a in el.findall(tag):
+                text = _text(a)
+                out += [text, atomfeed._person(text) if text else ""]
+    return [x for x in dict.fromkeys(out) if x]
+
+
+def skipped_author(el, fmt, rules):
+    """-> the skip_authors rule that matches one of the entry's authors, or None."""
+    if not rules:
+        return None
+    authors = entry_authors(el, fmt)
+    return next((kw for kw, rx in rules if any(rx.search(a) for a in authors)), None)
+
+
 # ------------------------------------------------------------------ editing feeds
 def original_html(el, fmt):
     """The entry's own summary/description as clean HTML (used when it is moved into the content)."""
@@ -328,11 +378,13 @@ def _signatures(feed):
     changing only how they are shown just forces the feed to be rewritten."""
     pick = lambda keys: json.dumps({k: feed.get(k) for k in keys}, sort_keys=True)
     return (pick(("selector", "link_from", "min_words", "skip_hosts", "_rules_text")),
-            pick(("summary", "summary_label", "drop_unhydrated", "format")) + str(VIEW_FORMAT))
+            pick(("summary", "summary_label", "drop_unhydrated", "format", "_skip_authors_text")) + str(VIEW_FORMAT))
 
 
 def _pending(rec):
-    return rec is None or (rec.get("html") is None and rec.get("tries", 0) < MAX_TRIES)
+    if rec is None:
+        return True
+    return rec.get("html") is None and not rec.get("skipped") and rec.get("tries", 0) < MAX_TRIES
 
 
 # ------------------------------------------------------------------ fetching articles
@@ -398,11 +450,22 @@ def refresh(feed, cfg):
     done, drop = 0, []
     for el in entries_of(root, fmt):
         key = entry_key(el, fmt)
+        hit = skipped_author(el, fmt, feed.get("_skip_authors"))
+        if hit is not None:
+            # Left out whatever drop_unhydrated says, and never fetched. Remembered, so the entry is not "new" again.
+            drop.append(el)
+            if key:
+                if not (st["items"].get(key) or {}).get("skipped"):
+                    log("%s: left out %s (the author matches %r)" % (name, key, hit))
+                st["items"][key] = {"html": None, "tries": 0, "skipped": True}
+            continue
         if not key:
             if drop_mode:
                 drop.append(el)  # cannot be tracked, so it cannot be hydrated either
             continue
         rec = st["items"].get(key)
+        if rec and rec.get("skipped"):
+            rec = None  # it was left out for its author, and the rule is gone: treat it as new
         if _pending(rec) and done < cfg["max_items_per_run"]:
             link = article_url(el, fmt, feed.get("link_from", "link"))
             html_text, tries, fetched = None, (rec or {}).get("tries", 0) + 1, False
